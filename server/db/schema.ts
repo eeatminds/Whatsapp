@@ -242,4 +242,12 @@ export const MIGRATIONS: string[] = [
     created_at TEXT NOT NULL
   );
   `,
+  `
+  -- Opt-outs outlive deletion: a deleted contact who had unsubscribed is remembered only as a keyed
+  -- hash of the number, so a later import or API call can't quietly re-subscribe them.
+  CREATE TABLE suppressed_phones (
+    phone_hash TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+  );
+  `,
 ];

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Core } from '../context.js';
 import { nowIso, parseJson } from '../db/database.js';
 import { badRequest, notFound } from '../lib/errors.js';
+import { regexProblem } from '../lib/safe-regex.js';
 import { contactVariables, renderTemplate } from '../lib/template.js';
 import type { SettingsService } from './settings.js';
 import type { MediaService } from './media.js';
@@ -120,8 +121,10 @@ export function matchesRule(rule: Pick<AutoReply, 'matchType' | 'keywords'>, bod
   if (rule.matchType === 'any') return true;
   const text = normalizeKeywordText(body);
   if (rule.matchType === 'regex') {
-    const sample = body.slice(0, 1000);
+    const sample = body.slice(0, 500);
     return rule.keywords.some(pattern => {
+      // Rules saved before this check existed are skipped rather than risk freezing the server.
+      if (regexProblem(pattern)) return false;
       try {
         return new RegExp(pattern, 'iu').test(sample);
       } catch {
@@ -171,6 +174,8 @@ export class AutoRepliesService {
     const data = autoReplyInputSchema.parse(input);
     if (data.matchType === 'regex') {
       for (const pattern of data.keywords) {
+        const problem = regexProblem(pattern);
+        if (problem) throw badRequest(`Pattern '${pattern}': ${problem}`);
         try {
           new RegExp(pattern, 'iu');
         } catch (error) {

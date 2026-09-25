@@ -158,22 +158,26 @@ export function SettingsPage() {
         </div>
       </Card>
 
-      <Card title="Connection" subtitle="Configured with environment variables on the server.">
+      <Card title="Connection" subtitle={canEditLimits ? 'Configured with environment variables on the server.' : 'Managed by your provider.'}>
         {!sys ? (
           <Loading />
         ) : (
           <div className="stack">
             <dl className="kv">
-              <dt>OpenWA gateway</dt>
+              <dt>WhatsApp gateway</dt>
               <dd>
-                <span className="mono">{sys.openwaUrl}</span>{' '}
+                {sys.openwaUrl && <span className="mono">{sys.openwaUrl} </span>}
                 {sys.gateway.reachable ? <Badge tone="green">Reachable</Badge> : <Badge tone="red">Unreachable</Badge>}
                 {sys.gateway.lastError && <div className="small error-text">{sys.gateway.lastError}</div>}
               </dd>
-              <dt>Webhook URL</dt>
-              <dd className="mono">{sys.webhookUrl}</dd>
+              {sys.webhookUrl && (
+                <>
+                  <dt>Webhook URL</dt>
+                  <dd className="mono">{sys.webhookUrl}</dd>
+                </>
+              )}
               <dt>Click tracking</dt>
-              <dd>{sys.trackingEnabled ? <span className="mono">{sys.publicUrl}/r/…</span> : 'Off (set PUBLIC_URL)'}</dd>
+              <dd>{sys.trackingEnabled ? <span className="mono">{sys.publicUrl}/r/…</span> : canEditLimits ? 'Off (set PUBLIC_URL)' : 'Off'}</dd>
               <dt>REST API</dt>
               <dd>
                 Create an API key under <a href="/account">Account & billing</a> to add contacts from forms, CRMs or n8n.
@@ -202,7 +206,7 @@ export function SettingsPage() {
             </div>
             {sync && (
               <Callout tone={sync.some(r => r.result.startsWith('error')) ? 'warn' : 'success'}>
-                {sync.length === 0 ? 'No numbers in OpenWA yet.' : sync.map(r => `${r.name}: ${r.result}`).join(' · ')}
+                {sync.length === 0 ? 'No numbers yet.' : sync.map(r => `${r.name}: ${r.result}`).join(' · ')}
               </Callout>
             )}
           </div>

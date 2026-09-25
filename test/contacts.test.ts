@@ -140,7 +140,37 @@ describe('WhatsApp numbers', () => {
     env.s.sessions.invalidate();
     const sessions = await env.api('GET', '/api/sessions');
     expect(sessions.body.gateway).toMatchObject({ reachable: false });
-    expect(sessions.body.gateway.lastError).toMatch(/unreachable/);
+    // Businesses get a plain message, never the gateway's internal address or raw error.
+    expect(sessions.body.gateway.lastError).toMatch(/not reachable/);
+    expect(JSON.stringify(sessions.body)).not.toMatch(/127\.0\.0\.1|localhost:\d+/);
+    expect((await env.api('GET', '/api/system')).body).toMatchObject({ openwaUrl: null, webhookUrl: null });
+  });
+
+  it('remembers opt-outs after a contact is deleted, without storing the number', async () => {
+    const created = await env.api('POST', '/api/contacts', { phone: '9876590001', name: 'Opted out' });
+    const id = created.body.contact.id;
+    await env.webhook('message.received', inbound('919876590001', 'STOP'));
+    expect((await env.api('GET', `/api/contacts/${id}`)).body.contact.consent).toBe('opted_out');
+    expect((await env.api('DELETE', `/api/contacts/${id}`)).status).toBe(200);
+    const rows = env.s.contacts['core'].db.all<{ phone_hash: string }>('SELECT phone_hash FROM suppressed_phones');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].phone_hash).not.toContain('9876590001');
+
+    // Re-adding the number by import or API can't re-subscribe it.
+    const again = await env.api('POST', '/api/contacts/import', {
+      csv: 'phone,name\n9876590001,Opted out',
+      mapping: { '0': 'phone', '1': 'name' },
+      consent: 'opted_in',
+      consentSource: 'old list',
+    });
+    expect(again.body.created).toBe(1);
+    const list = await env.api('GET', '/api/contacts?q=9876590001');
+    expect(list.body.items[0].consent).toBe('opted_out');
+
+    // Only the person themselves can opt back in, which clears the memory.
+    await env.webhook('message.received', inbound('919876590001', 'START'));
+    expect((await env.api('GET', '/api/contacts?q=9876590001')).body.items[0].consent).toBe('opted_in');
+    expect(env.s.contacts['core'].db.all('SELECT * FROM suppressed_phones')).toHaveLength(0);
   });
 });
 

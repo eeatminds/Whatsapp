@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { z } from 'zod';
 import type { Core } from '../context.js';
 import { nowIso, parseJson } from '../db/database.js';
@@ -198,6 +199,36 @@ export class ContactsService {
     return nowIso(this.core.clock());
   }
 
+  // ---------------------------------------------------------------- opt-out memory
+
+  /** Keyed hash, so the stored value can't be turned back into the phone number. */
+  private phoneHash(phone: string): string {
+    return createHmac('sha256', this.core.config.appSecret).update(`suppressed:${phone}`).digest('hex');
+  }
+
+  /** Before deleting contacts, remember the numbers that had unsubscribed. */
+  private rememberOptOuts(idsJson: string): void {
+    const rows = this.core.db.all<{ phone: string }>(
+      "SELECT phone FROM contacts WHERE consent = 'opted_out' AND id IN (SELECT value FROM json_each(?))",
+      idsJson,
+    );
+    for (const { phone } of rows) {
+      this.core.db.run('INSERT OR IGNORE INTO suppressed_phones (phone_hash, created_at) VALUES (?, ?)', this.phoneHash(phone), this.now());
+    }
+  }
+
+  /** A newly created contact whose number unsubscribed before (and was deleted) starts as opted out. */
+  private applySuppression(contactId: number, phone: string): void {
+    if (!this.core.db.get('SELECT 1 FROM suppressed_phones WHERE phone_hash = ?', this.phoneHash(phone))) return;
+    const now = this.now();
+    this.core.db.run(
+      "UPDATE contacts SET consent = 'opted_out', consent_source = 'unsubscribed before', consent_at = ?, updated_at = ? WHERE id = ?",
+      now,
+      now,
+      contactId,
+    );
+  }
+
   // ---------------------------------------------------------------- queries
 
   filterSql(filter: ContactFilter): SqlFragment {
@@ -329,6 +360,7 @@ export class ContactsService {
           now,
           now,
         ).lastInsertRowid;
+        this.applySuppression(contactId, phone);
         created = true;
       }
       if (data.consent) this.setConsent(contactId, data.consent, data.consentSource ?? data.source ?? 'manual');
@@ -373,8 +405,11 @@ export class ContactsService {
   }
 
   delete(contactId: number): void {
-    const { changes } = this.core.db.run('DELETE FROM contacts WHERE id = ?', contactId);
-    if (!changes) throw notFound('Contact');
+    this.core.db.tx(() => {
+      this.rememberOptOuts(JSON.stringify([contactId]));
+      const { changes } = this.core.db.run('DELETE FROM contacts WHERE id = ?', contactId);
+      if (!changes) throw notFound('Contact');
+    });
   }
 
   /**
@@ -394,6 +429,7 @@ export class ContactsService {
       this.now(),
       contactId,
     );
+    if (consent === 'opted_in') this.core.db.run('DELETE FROM suppressed_phones WHERE phone_hash = ?', this.phoneHash(row.phone));
     this.bus.emit('consent.changed', { contactId, from: row.consent, to: consent });
     return true;
   }
@@ -459,7 +495,10 @@ export class ContactsService {
       }
       case 'delete':
         return {
-          affected: this.core.db.run('DELETE FROM contacts WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(ids)).changes,
+          affected: this.core.db.tx(() => {
+            this.rememberOptOuts(JSON.stringify(ids));
+            return this.core.db.run('DELETE FROM contacts WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(ids)).changes;
+          }),
         };
       case 'validate':
         return { affected: this.requestValidation(ids) };
@@ -493,6 +532,7 @@ export class ContactsService {
       at,
       at,
     ).lastInsertRowid;
+    this.applySuppression(id, phone);
     return { row: this.row(id), created: true };
   }
 
@@ -626,6 +666,7 @@ export class ContactsService {
             now,
             now,
           ).lastInsertRowid;
+          this.applySuppression(contactId, normalized.phone);
           result.created++;
         }
         if (data.consent === 'opted_in') this.setConsent(contactId, 'opted_in', consentSource);

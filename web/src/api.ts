@@ -348,8 +348,9 @@ export interface Settings {
 
 export interface SystemInfo {
   gateway: GatewayStatus;
-  openwaUrl: string;
-  webhookUrl: string;
+  /** Only returned to the platform admin. */
+  openwaUrl: string | null;
+  webhookUrl: string | null;
   publicUrl: string | null;
   trackingEnabled: boolean;
   apiKeyEnabled: boolean;

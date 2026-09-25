@@ -72,8 +72,9 @@ services:
     volumes:
       - wa-reach-data:/app/data
     ports:
-      # With the HTTPS add-on set WA_REACH_BIND=127.0.0.1 so only Caddy is reachable from outside.
-      - '${WA_REACH_BIND:-0.0.0.0}:${WA_REACH_PORT:-3000}:3000'
+      # Only this computer can reach port 3000 by default (the HTTPS add-on and Codespaces both work
+      # with that). Set WA_REACH_BIND=0.0.0.0 to open it to your local network without HTTPS.
+      - '${WA_REACH_BIND:-127.0.0.1}:${WA_REACH_PORT:-3000}:3000'
 
 volumes:
   openwa-data:

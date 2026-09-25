@@ -170,7 +170,6 @@ You need a Linux VPS (Ubuntu 22.04+ works well) and a domain or subdomain, e.g. 
    OPENWA_API_KEY=<output of: openssl rand -base64 36>
    DOMAIN=app.yourbrand.com
    PUBLIC_URL=https://app.yourbrand.com
-   WA_REACH_BIND=127.0.0.1
    ```
 
 5. **Open the firewall** for ports 80 and 443 (e.g. `ufw allow 80,443/tcp`), plus SSH.
@@ -212,7 +211,7 @@ OPENWA_URL=http://localhost:2785 OPENWA_API_KEY=... ADMIN_EMAIL=... ADMIN_PASSWO
 | `APP_SECRET` | generated | Cookie signing key |
 | `DATA_DIR` | `./data` | Platform database, one SQLite database and media folder per business under `tenants/`, and generated secrets |
 | `DOMAIN` | – | Your domain, for the HTTPS add-on (`docker-compose.prod.yml`) |
-| `WA_REACH_BIND` | `0.0.0.0` | Set to `127.0.0.1` behind Caddy so only HTTPS is reachable |
+| `WA_REACH_BIND` | `127.0.0.1` | Address port 3000 is published on. The default keeps it private, so people reach the app only through HTTPS (Caddy). |
 | `DEFAULT_TIMEZONE` / `DEFAULT_COUNTRY` | `Asia/Kolkata` / `IN` | Defaults for a new install. Both can be changed in Settings. |
 | `TRUST_PROXY` | private networks | Which reverse proxies may set `X-Forwarded-*` |
 | `PORT` / `HOST` | `3000` / `0.0.0.0` | Listen address |

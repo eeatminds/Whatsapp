@@ -111,6 +111,9 @@ const DEFAULT_SETTINGS: PlatformSettings = {
 export type SendingLimits = Settings['sending'];
 const sendingLimitsSchema = settingsSchema.shape.sending.partial();
 
+/** Computed once; checking a password against it costs the same as against a real user's hash. */
+const DUMMY_HASH = hashPassword(randomBytes(16).toString('hex'));
+
 const email = z.string().trim().toLowerCase().email().max(200);
 const password = z.string().min(8, 'Passwords need at least 8 characters').max(200);
 
@@ -266,8 +269,8 @@ export class Platform {
 
   authenticate(emailAddress: string, passwordText: string): UserRow | null {
     const user = this.db.get<UserRow>('SELECT * FROM users WHERE email = ?', emailAddress.trim().toLowerCase());
-    // Hash even when the user is missing so response time doesn't reveal which emails exist.
-    const ok = verifyPassword(passwordText, user?.password_hash ?? hashPassword('timing-equalizer'));
+    // Verify against a dummy hash when the user is missing, so response time doesn't reveal which emails exist.
+    const ok = verifyPassword(passwordText, user?.password_hash ?? DUMMY_HASH);
     if (!user || !ok || user.disabled) return null;
     this.db.run('UPDATE users SET last_login_at = ? WHERE id = ?', this.now(), user.id);
     return user;

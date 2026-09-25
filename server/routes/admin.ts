@@ -22,6 +22,11 @@ const userParam = z.object({ id: z.string().min(1).max(40), userId: z.coerce.num
 
 /** Platform-owner routes: businesses, subscriptions, payments, users, white-label settings. */
 export async function registerAdminRoutes(app: FastifyInstance, platform: Platform, enter: (request: FastifyRequest, tenantId: string | null) => string): Promise<void> {
+  // Second, independent check (the app-wide hook already enforces this).
+  app.addHook('onRequest', async request => {
+    if (request.auth?.user?.role !== 'platform_admin') throw new HttpError(403, 'Platform admins only');
+  });
+
   app.get('/overview', async () => {
     const overview = platform.overview();
     let gateway: { reachable: boolean; sessions: number; ready: number; error?: string } = { reachable: false, sessions: 0, ready: 0 };
@@ -118,6 +123,10 @@ export async function registerAdminRoutes(app: FastifyInstance, platform: Platfo
 
 /** Business-owner routes: own subscription, team, API key, password. */
 export async function registerAccountRoutes(app: FastifyInstance, platform: Platform): Promise<void> {
+  app.addHook('onRequest', async request => {
+    if (!request.auth?.tenantId) throw new HttpError(401, 'Authentication required');
+  });
+
   const tenantOf = (request: FastifyRequest): string => {
     const tenantId = request.auth?.tenantId;
     if (!tenantId) throw new HttpError(403, 'No business selected');
@@ -129,6 +138,7 @@ export async function registerAccountRoutes(app: FastifyInstance, platform: Plat
   };
 
   app.get('/', async request => {
+    if (!request.auth?.user) throw new HttpError(403, 'Sign in to see account details');
     const tenantId = tenantOf(request);
     return {
       tenant: platform.tenant(tenantId),

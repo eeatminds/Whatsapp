@@ -33,7 +33,7 @@ export function DashboardPage() {
       <ErrorNote error={error} />
       {data && !data.gateway.reachable && (
         <Callout tone="danger">
-          The OpenWA gateway is unreachable{data.gateway.lastError ? `: ${data.gateway.lastError}` : ''}. Nothing can be sent until it is back.{' '}
+          The WhatsApp gateway is unreachable{data.gateway.lastError ? `: ${data.gateway.lastError}` : ''}. Nothing can be sent until it is back.{' '}
           <Link to="/settings">Check the connection</Link>
         </Callout>
       )}

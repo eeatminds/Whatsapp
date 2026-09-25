@@ -24,14 +24,22 @@ function filterFromQuery(query: unknown) {
 }
 
 export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Services): Promise<void> {
+  /** Internal addresses and raw gateway errors are for the platform admin only. */
+  const gatewayFor = (request: FastifyRequest) => {
+    const gateway = s.sessions.gatewayStatus();
+    if (request.auth?.user?.role === 'platform_admin') return gateway;
+    return { ...gateway, webhookUrl: '', lastError: gateway.lastError ? 'The WhatsApp gateway is not reachable right now. Try again in a few minutes.' : null };
+  };
+
   // ---------------------------------------------------------------- system
 
-  app.get('/system', async () => {
+  app.get('/system', async request => {
     const settings = s.settings.get();
+    const isAdmin = request.auth?.user?.role === 'platform_admin';
     return {
-      gateway: s.sessions.gatewayStatus(),
-      openwaUrl: core.config.openwa.url,
-      webhookUrl: core.config.webhookUrl,
+      gateway: gatewayFor(request),
+      openwaUrl: isAdmin ? core.config.openwa.url : null,
+      webhookUrl: isAdmin ? core.config.webhookUrl : null,
       publicUrl: core.config.publicUrl,
       trackingEnabled: !!core.config.publicUrl,
       apiKeyEnabled: !!core.config.apiKey,
@@ -44,22 +52,22 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
 
   app.post('/system/sync-webhooks', async () => ({ results: await s.sessions.syncWebhooks() }));
 
-  app.get('/overview', async () => {
+  app.get('/overview', async request => {
     const sessions = await s.sessions.list();
     return {
       ...s.analytics.overview(14),
-      gateway: s.sessions.gatewayStatus(),
+      gateway: gatewayFor(request),
       sessions: sessions.map(session => ({ id: session.id, name: session.name, status: session.status, phone: session.phone })),
     };
   });
 
   // ---------------------------------------------------------------- WhatsApp numbers (OpenWA sessions)
 
-  app.get('/sessions', async () => {
+  app.get('/sessions', async request => {
     const sessions = await s.sessions.list(true);
     const tz = s.settings.get().timezone;
     return {
-      gateway: s.sessions.gatewayStatus(),
+      gateway: gatewayFor(request),
       defaultSessionId: s.settings.get().defaultSessionId,
       dailyCap: s.settings.get().sending.dailyCapPerSession,
       items: sessions.map(session => ({
@@ -185,9 +193,13 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   app.post('/media', { bodyLimit: 45 * 1024 * 1024 }, async (request, reply) => reply.status(201).send(await s.media.upload(request.body)));
   app.get('/media/:id/file', async (request, reply) => {
     const { media, data } = await s.media.read(params(idParam, request).id);
+    // Images, video and audio display inline; documents always download, never render in the page.
+    const inline = /^(image|video|audio)\//.test(media.mimetype);
+    const asciiName = media.filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\;]/g, '_');
     return reply
       .header('Content-Type', media.mimetype)
-      .header('Content-Disposition', `inline; filename="${media.filename.replace(/["\\]/g, '_')}"`)
+      .header('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(media.filename)}`)
+      .header('Content-Security-Policy', "default-src 'none'; img-src 'self'; media-src 'self'; sandbox")
       .header('Cache-Control', 'private, max-age=86400')
       .send(data);
   });

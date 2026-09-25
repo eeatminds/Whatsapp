@@ -59,17 +59,27 @@ function errorResponse(error: unknown): { status: number; body: Record<string, u
   return { status: 500, body: { error: 'Internal server error' } };
 }
 
+/** Counts failed sign-ins per key (IP address, and separately per email) in a 15-minute window. */
 class LoginLimiter {
   private readonly attempts = new Map<string, { count: number; resetAt: number }>();
-  allow(key: string): boolean {
+  constructor(private readonly max: number) {}
+  private entry(key: string): { count: number; resetAt: number } {
     const now = Date.now();
-    const entry = this.attempts.get(key);
-    if (!entry || entry.resetAt < now) {
-      this.attempts.set(key, { count: 1, resetAt: now + 15 * 60_000 });
-      return true;
+    if (this.attempts.size > 50_000) {
+      for (const [k, v] of this.attempts) if (v.resetAt < now) this.attempts.delete(k);
     }
-    entry.count++;
-    return entry.count <= 10;
+    let entry = this.attempts.get(key);
+    if (!entry || entry.resetAt < now) {
+      entry = { count: 0, resetAt: now + 15 * 60_000 };
+      this.attempts.set(key, entry);
+    }
+    return entry;
+  }
+  blocked(key: string): boolean {
+    return this.entry(key).count >= this.max;
+  }
+  fail(key: string): void {
+    this.entry(key).count++;
   }
   reset(key: string): void {
     this.attempts.delete(key);
@@ -95,11 +105,18 @@ function sameOrigin(request: FastifyRequest, publicUrl: string | null): boolean 
   }
 }
 
-
 export async function buildApp(platform: Platform, options: AppOptions = {}): Promise<FastifyInstance> {
   const config = platform.config;
   const app = Fastify({
-    logger: options.logger ? { level: process.env.LOG_LEVEL ?? 'info' } : false,
+    logger: options.logger
+      ? {
+          level: process.env.LOG_LEVEL ?? 'info',
+          // Log paths without query strings: searches and filters can contain customers' names and numbers.
+          serializers: {
+            req: (req: { method: string; url: string; ip?: string }) => ({ method: req.method, url: req.url.split('?')[0], ip: req.ip }),
+          },
+        }
+      : false,
     // Trust X-Forwarded-* only from proxies on private networks (Docker, a local nginx/Caddy), so a
     // client on the internet cannot spoof its IP past the login rate limit. TRUST_PROXY overrides.
     trustProxy: process.env.TRUST_PROXY ?? 'loopback,linklocal,uniquelocal',
@@ -111,7 +128,10 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('X-Frame-Options', 'DENY');
     reply.header('Referrer-Policy', 'same-origin');
-    reply.header(
+    reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+    reply.header('Cross-Origin-Opener-Policy', 'same-origin');
+    if (config.cookieSecure || _request.protocol === 'https') reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    if (!reply.hasHeader('Content-Security-Policy')) reply.header(
       'Content-Security-Policy',
       "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     );
@@ -126,7 +146,9 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
 
   // ---------------------------------------------------------------- auth
 
-  const limiter = new LoginLimiter();
+  // 10 wrong passwords per address, and 20 per account from anywhere, per 15 minutes.
+  const ipLimiter = new LoginLimiter(10);
+  const emailLimiter = new LoginLimiter(20);
   const tenantContext = new AsyncLocalStorage<TenantRuntime>();
 
   const sessionCookie = (request: FastifyRequest, payload: Omit<SessionPayload, 'exp'> | null): string => {
@@ -155,7 +177,9 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
 
   // Callback-style hook so the rest of the request runs inside the business's context.
   app.addHook('onRequest', (request, reply, done) => {
-    const path = request.url.split('?')[0];
+    // Decide on the route that actually matched, never the raw URL: the router decodes paths, so a
+    // raw-URL check can be sidestepped with encodings like /%61pi/... . Unmatched URLs have no route.
+    const path = request.routeOptions.url ?? '';
     if (!path.startsWith('/api/') || PUBLIC_API.has(path)) return done();
     const auth = resolveAuth(request);
     if (!auth) return void reply.status(401).send({ error: 'Authentication required' });
@@ -207,12 +231,23 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
   });
 
   app.post('/api/auth/login', async (request, reply) => {
-    if (!limiter.allow(request.ip)) return reply.status(429).send({ error: 'Too many attempts. Try again in 15 minutes.' });
     const body = (request.body ?? {}) as { email?: unknown; password?: unknown };
-    if (typeof body.email !== 'string' || typeof body.password !== 'string') return reply.status(400).send({ error: 'Enter your email and password' });
+    if (typeof body.email !== 'string' || typeof body.password !== 'string' || body.email.length > 200 || body.password.length > 200) {
+      return reply.status(400).send({ error: 'Enter your email and password' });
+    }
+    const ipKey = `ip:${request.ip}`;
+    const emailKey = `email:${body.email.trim().toLowerCase()}`;
+    if (ipLimiter.blocked(ipKey) || emailLimiter.blocked(emailKey)) {
+      return reply.status(429).send({ error: 'Too many attempts. Try again in 15 minutes.' });
+    }
     const user = platform.authenticate(body.email, body.password);
-    if (!user) return reply.status(401).send({ error: 'Wrong email or password' });
-    limiter.reset(request.ip);
+    if (!user) {
+      ipLimiter.fail(ipKey);
+      emailLimiter.fail(emailKey);
+      return reply.status(401).send({ error: 'Wrong email or password' });
+    }
+    ipLimiter.reset(ipKey);
+    emailLimiter.reset(emailKey);
     reply.header('Set-Cookie', sessionCookie(request, { uid: user.id, ver: user.session_version }));
     return { authenticated: true };
   });
@@ -293,7 +328,16 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
   };
   const core = new Proxy({} as Core, { get: (_target, key) => current().core[key as keyof Core] });
   const services = new Proxy({} as Services, { get: (_target, key) => current().services[key as keyof Services] });
-  await app.register(async scope => registerApiRoutes(scope, core, services), { prefix: '/api' });
+  await app.register(
+    async scope => {
+      // Second, independent check: every business route needs a signed-in business context.
+      scope.addHook('onRequest', async request => {
+        if (!request.auth?.tenantId || !tenantContext.getStore()) throw new HttpError(401, 'Authentication required');
+      });
+      await registerApiRoutes(scope, core, services);
+    },
+    { prefix: '/api' },
+  );
 
   const staticDir = options.staticDir;
   if (staticDir && existsSync(join(staticDir, 'index.html'))) {

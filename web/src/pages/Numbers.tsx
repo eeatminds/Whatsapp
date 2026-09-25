@@ -61,7 +61,7 @@ function LinkModal({ session, onClose }: { session: Session; onClose: () => void
       ) : status === 'failed' || status === 'action_required' ? (
         <div className="stack">
           <Callout tone="danger">
-            The gateway could not start this number{lastError ? `: ${lastError}` : '.'} Check that the OpenWA server can reach web.whatsapp.com.
+            The gateway could not start this number{lastError ? `: ${lastError}` : '.'} Try again in a minute. If it keeps failing, contact support.
           </Callout>
           <div>
             <Button
@@ -174,7 +174,7 @@ export function NumbersPage() {
     <div className="page">
       <PageHeader
         title="WhatsApp numbers"
-        description="Numbers linked through your OpenWA gateway. Campaigns and replies are sent from these."
+        description="Your linked WhatsApp numbers. Campaigns and replies are sent from these."
         actions={
           <>
             <Button icon={<IconRefresh size={16} />} onClick={() => void reload()}>
@@ -192,9 +192,9 @@ export function NumbersPage() {
         </Callout>
       )}
       <ErrorNote error={error} />
-      {data && !data.gateway.reachable && <Callout tone="danger">The OpenWA gateway is unreachable. Check OPENWA_URL and that the gateway container is running.</Callout>}
+      {data && !data.gateway.reachable && <Callout tone="danger">The WhatsApp gateway is unreachable right now, so numbers can't connect or send. Try again in a few minutes.</Callout>}
       <Callout tone="warn">
-        OpenWA links numbers the way WhatsApp Web does, not through Meta's official Cloud API, so a number can be restricted if WhatsApp sees spam.
+        Numbers are linked the way WhatsApp Web does, not through Meta's official Cloud API, so a number can be restricted if WhatsApp sees spam.
         Use a dedicated number, warm it up for a few days before bulk sending, and message only people who expect to hear from you.
       </Callout>
 
@@ -261,7 +261,7 @@ export function NumbersPage() {
                       size="sm"
                       variant="danger"
                       onClick={async () => {
-                        const ok = await confirm('Remove this number?', 'The device is unlinked in OpenWA. Campaigns using it will wait until you choose another number.', {
+                        const ok = await confirm('Remove this number?', 'The device is unlinked. Campaigns using it will wait until you choose another number.', {
                           confirmLabel: 'Remove',
                           danger: true,
                         });

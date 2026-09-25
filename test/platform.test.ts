@@ -33,7 +33,7 @@ describe('platform admin', () => {
     const admin = await login('admin@example.com', 'platform-admin-password');
     const created = await as(admin, 'POST', '/api/admin/tenants', { name: 'Sharma Salon', ownerEmail: 'Priya@Salon.example', ownerName: 'Priya' });
     expect(created.status).toBe(201);
-    expect(created.body.password).toMatch(/^[a-z]+-\d{4}-[a-z]+$/);
+    expect(created.body.password).toMatch(/^[a-z]+-\d{4}-[a-z]+-[a-z]+$/);
     expect(created.body.tenant).toMatchObject({ name: 'Sharma Salon', priceMonthly: 1000, maxNumbers: 1, access: 'active' });
 
     const owner = await login('priya@salon.example', created.body.password);
@@ -83,6 +83,51 @@ describe('platform admin', () => {
     expect(viaKey.statusCode).toBe(200);
     // Rotating replaces the old key.
     expect((await env.app.inject({ method: 'GET', url: '/api/contacts', headers: { 'x-api-key': env.apiKey } })).statusCode).toBe(401);
+  });
+});
+
+describe('security', () => {
+  it('cannot reach admin or business routes through encoded or odd paths', async () => {
+    for (const url of ['/%61pi/admin/tenants', '/api/%61dmin/tenants', '/%61pi/contacts', '/%61pi/account/', '/api//admin/tenants']) {
+      const res = await env.app.inject({ method: 'GET', url });
+      expect([401, 404]).toContain(res.statusCode);
+      expect(res.body).not.toContain('Test Shop');
+    }
+    const owner = await login('owner@shop.example', 'owner-password-123');
+    // A business owner can't use the admin panel, however the path is written.
+    for (const url of ['/api/admin/tenants', '/%61pi/admin/tenants', '/api/%61dmin/overview']) {
+      expect((await as(owner, 'GET', url)).status).toBe(403);
+    }
+  });
+
+  it('limits password guessing per account, from any address', async () => {
+    for (let i = 0; i < 20; i++) {
+      const res = await env.app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'owner@shop.example', password: `wrong-${i}` }, remoteAddress: `10.0.${i}.1` });
+      expect(res.statusCode).toBe(401);
+    }
+    const blocked = await env.app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: 'owner@shop.example', password: 'owner-password-123' }, remoteAddress: '10.9.9.9' });
+    expect(blocked.statusCode).toBe(429);
+    // Other accounts are unaffected.
+    await login('admin@example.com', 'platform-admin-password');
+  });
+
+  it('refuses auto-reply patterns that could freeze the server', async () => {
+    const rule = { name: 'Bad', matchType: 'regex', keywords: ['(a+)+$'], replyBody: 'x' };
+    const res = await env.api('POST', '/api/auto-replies', rule);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Repetition inside a repeated group/);
+    expect((await env.api('POST', '/api/auto-replies', { ...rule, keywords: ['^order\\s*#?\\d+'] })).status).toBe(201);
+  });
+
+  it('sends security headers and serves documents as downloads', async () => {
+    const res = await env.app.inject({ method: 'GET', url: '/api/health' });
+    expect(res.headers['x-frame-options']).toBe('DENY');
+    expect(res.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+    const pdf = await env.api('POST', '/api/media', { filename: 'Price list ₹.pdf', mimetype: 'application/pdf', base64: Buffer.from('%PDF-1.4').toString('base64') });
+    const file = await env.app.inject({ method: 'GET', url: `/api/media/${pdf.body.id}/file`, headers: { 'x-api-key': env.apiKey } });
+    expect(file.statusCode).toBe(200);
+    expect(file.headers['content-disposition']).toMatch(/^attachment; filename="Price list _.pdf"; filename\*=UTF-8''Price%20list%20%E2%82%B9.pdf$/);
+    expect(file.headers['content-security-policy']).toContain('sandbox');
   });
 });
 
