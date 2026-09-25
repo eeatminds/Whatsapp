@@ -108,6 +108,12 @@ Sign in with any of these (password `demo-password` for all):
 
 The demo runs a simulated OpenWA gateway with sample contacts, templates, automations, two weeks of campaign history and a campaign sending live. Receipts and customer replies arrive over real signed webhooks. Nothing is sent to WhatsApp.
 
+### Try it with real WhatsApp in your browser (GitHub Codespaces)
+
+No install needed. On GitHub, open the repository, choose this branch, then **Code → Codespaces → Create codespace**. The setup starts WA Reach and OpenWA, opens the dashboard, and prints an admin login in the terminal (also saved in `wa-reach/.env`). Scan the QR code from **WhatsApp numbers** as usual.
+
+A codespace stops after 30 minutes idle and the WhatsApp link pauses with it. It's meant for testing; use a server to run it for customers.
+
 ### Run for real (Docker)
 
 ```bash

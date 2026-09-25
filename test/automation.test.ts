@@ -204,6 +204,14 @@ describe('auth', () => {
       headers: { cookie, origin: 'https://evil.example', host: 'reach.example.com' },
     });
     expect(crossSite.statusCode).toBe(403);
+    // A proxy that rewrites Host (Codespaces) still passes when the Origin is the configured PUBLIC_URL.
+    const proxied = await env.app.inject({
+      method: 'POST',
+      url: '/api/tags',
+      payload: { name: 'y' },
+      headers: { cookie, origin: 'https://reach.example.com', host: 'localhost:3000' },
+    });
+    expect(proxied.statusCode).toBe(201);
   });
 });
 

@@ -77,12 +77,15 @@ class LoginLimiter {
 }
 
 /** Reject cross-site state-changing requests (defense in depth on top of SameSite=Lax cookies). */
-function sameOrigin(request: FastifyRequest): boolean {
+function sameOrigin(request: FastifyRequest, publicUrl: string | null): boolean {
   const origin = request.headers.origin;
   if (!origin) return true;
   try {
+    const originHost = new URL(origin).host;
+    // Behind a proxy that rewrites Host (e.g. GitHub Codespaces), the configured public URL is the site's origin.
+    if (publicUrl && originHost === new URL(publicUrl).host) return true;
     const host = request.headers['x-forwarded-host'] ?? request.headers.host;
-    return new URL(origin).host === host;
+    return originHost === host;
   } catch {
     return false;
   }
@@ -152,7 +155,7 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
     if (!path.startsWith('/api/') || PUBLIC_API.has(path)) return done();
     const auth = resolveAuth(request);
     if (!auth) return void reply.status(401).send({ error: 'Authentication required' });
-    if (request.method !== 'GET' && request.method !== 'HEAD' && auth.via === 'cookie' && !sameOrigin(request)) {
+    if (request.method !== 'GET' && request.method !== 'HEAD' && auth.via === 'cookie' && !sameOrigin(request, config.publicUrl)) {
       return void reply.status(403).send({ error: 'Cross-origin request refused' });
     }
     request.auth = auth;
