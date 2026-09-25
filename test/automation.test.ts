@@ -212,6 +212,13 @@ describe('auth', () => {
       headers: { cookie, origin: 'https://reach.example.com', host: 'localhost:3000' },
     });
     expect(proxied.statusCode).toBe(201);
+    const forwarded = await env.app.inject({
+      method: 'POST',
+      url: '/api/tags',
+      payload: { name: 'z' },
+      headers: { cookie, origin: 'https://abc-3000.app.github.dev', host: 'abc-3000.app.github.dev', 'x-forwarded-host': 'localhost:3000' },
+    });
+    expect(forwarded.statusCode).toBe(201);
   });
 });
 

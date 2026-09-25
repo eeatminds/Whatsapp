@@ -82,10 +82,14 @@ function sameOrigin(request: FastifyRequest, publicUrl: string | null): boolean 
   if (!origin) return true;
   try {
     const originHost = new URL(origin).host;
-    // Behind a proxy that rewrites Host (e.g. GitHub Codespaces), the configured public URL is the site's origin.
-    if (publicUrl && originHost === new URL(publicUrl).host) return true;
-    const host = request.headers['x-forwarded-host'] ?? request.headers.host;
-    return originHost === host;
+    // Proxies differ in which header keeps the browser's host (GitHub Codespaces rewrites Host and
+    // X-Forwarded-Host inconsistently), so accept a match on any of them or on the configured PUBLIC_URL.
+    const forwarded = request.headers['x-forwarded-host'];
+    const candidates = [request.headers.host, ...(Array.isArray(forwarded) ? forwarded : String(forwarded ?? '').split(','))]
+      .map(h => h?.trim())
+      .filter(Boolean);
+    if (publicUrl) candidates.push(new URL(publicUrl).host);
+    return candidates.includes(originHost);
   } catch {
     return false;
   }
