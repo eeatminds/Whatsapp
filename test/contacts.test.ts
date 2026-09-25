@@ -45,7 +45,17 @@ describe('contacts', () => {
     const tagged = await env.api('GET', `/api/contacts?tagId=${tag.id}`);
     expect(tagged.body.total).toBe(3);
     const csv = await env.api('GET', `/api/contacts/export.csv?tagId=${tag.id}`);
-    expect(String(csv.body).split('\r\n').filter(Boolean)).toHaveLength(4);
+    const lines = String(csv.body).split('\r\n').filter(Boolean);
+    expect(lines).toHaveLength(4);
+    // Phones are exported as 0091 98765 70001 so Excel keeps them as text.
+    expect(lines[1]).toMatch(/^0091 98765 7000\d,/);
+
+    // Re-importing our own export matches the columns automatically and skips the system ones.
+    const preview = await env.api('POST', '/api/contacts/import/preview', { csv: String(csv.body) });
+    const byHeader = Object.fromEntries(preview.body.headers.map((h: string, i: number) => [h, preview.body.mapping[String(i)]]));
+    expect(byHeader).toMatchObject({ phone: 'phone', name: 'name', email: 'email', tags: 'tags', consent: 'ignore', whatsapp: 'ignore', source: 'ignore', created_at: 'ignore' });
+    const reimport = await env.api('POST', '/api/contacts/import', { csv: String(csv.body), mapping: preview.body.mapping });
+    expect(reimport.body).toMatchObject({ created: 0, skipped: 0 });
     const del = await env.api('POST', '/api/contacts/bulk', { filter: { ids: [tagged.body.items[0].id] }, action: 'delete' });
     expect(del.body.affected).toBe(1);
     expect((await env.api('GET', '/api/contacts')).body.total).toBe(2);

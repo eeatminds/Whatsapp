@@ -17,7 +17,7 @@ export function normalizePhone(input: unknown, defaultCountry: string = 'IN'): P
 
   // Spreadsheet exports sometimes turn long numbers into scientific notation.
   if (/^\d(\.\d+)?e\+\d+$/i.test(raw)) {
-    return { ok: false, reason: 'number was converted to scientific notation by a spreadsheet' };
+    return { ok: false, reason: 'Excel changed this number to scientific notation (like 9.17E+11) and lost digits. Type it with spaces, like 98765 43210, and save again' };
   }
 
   // Strip a WhatsApp jid suffix if someone pasted a chat id.
@@ -56,6 +56,15 @@ export function phoneFromChatId(chatId: string | null | undefined): string | nul
   if (!chatId) return null;
   const match = /^(\d{6,20})(?::\d+)?@(c\.us|s\.whatsapp\.net)$/.exec(chatId);
   return match ? match[1] : null;
+}
+
+/**
+ * Spreadsheet-safe form for CSV files: "0091 98765 43210". Excel turns a bare 919876543210 into
+ * 9.19E+11 and reads a leading "+" as a formula; the 00 prefix with spaces stays text, and
+ * normalizePhone reads it back as the same international number.
+ */
+export function spreadsheetPhone(phone: string): string {
+  return formatPhone(phone).replace(/^\+/, '00');
 }
 
 export function formatPhone(phone: string): string {

@@ -49,6 +49,36 @@ function toQuery(filter: ContactFilter, extra: Record<string, string | number> =
 
 // ---------------------------------------------------------------- import wizard
 
+/**
+ * A ready-to-fill spreadsheet. Phone numbers are written with spaces so Excel keeps them as text
+ * (a bare 919876543210 turns into 9.19E+11 and loses digits; a leading + is read as a formula).
+ */
+const TEMPLATE_CSV = [
+  'Phone,Name,Email,Tags,City',
+  '98765 43210,Priya Sharma,priya@example.com,"customer, vip",Bengaluru',
+  '0091 91234 56789,Rahul Verma,,new-lead,Pune',
+].join('\r\n');
+
+export function downloadContactsTemplate() {
+  // The byte-order mark makes Excel open the file as UTF-8 (names with accents, ₹, Hindi, etc.).
+  const blob = new Blob(['\uFEFF' + TEMPLATE_CSV + '\r\n'], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'contacts-template.csv';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const FIELD_LABELS: Record<string, string> = {
+  phone: 'Phone',
+  name: 'Name',
+  first_name: 'First name',
+  last_name: 'Last name',
+  email: 'Email',
+  tags: 'Tags',
+};
+
 type Mapping = Record<string, string>;
 
 const FIELD_OPTIONS = [
@@ -92,6 +122,7 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
   };
 
   const phoneMapped = Object.values(mapping).filter(v => v === 'phone').length === 1;
+  const [showMapping, setShowMapping] = useState(false);
 
   const runImport = async () => {
     setBusy(true);
@@ -167,9 +198,22 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
         </div>
       ) : !preview ? (
         <div className="stack">
-          <p className="secondary">
-            Upload a CSV exported from Excel, Google Sheets or your CRM. Include a phone column; numbers without a country code use your default country (Settings).
-          </p>
+          <ol className="stack tight" style={{ margin: 0, paddingLeft: 20 }}>
+            <li>
+              <Button size="sm" icon={<IconDownload size={14} />} onClick={downloadContactsTemplate}>
+                Download the template
+              </Button>{' '}
+              <span className="secondary">and open it in Excel or Google Sheets.</span>
+            </li>
+            <li className="secondary">
+              Fill one person per row. Only <strong>Phone</strong> is required. Type mobile numbers with a space, like <span className="mono">98765 43210</span>. For
+              another country, start with 00 and its code, like <span className="mono">00971 50 123 4567</span>.
+              Put several tags in one cell separated by commas. Rename or add columns (e.g. City) for your own fields.
+            </li>
+            <li className="secondary">
+              Save as <strong>CSV</strong> (Excel: File → Save As → CSV UTF-8. Sheets: File → Download → CSV) and upload it below.
+            </li>
+          </ol>
           <input
             ref={input}
             type="file"
@@ -207,41 +251,71 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
               Choose another file
             </Button>
           </div>
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Column</th>
-                  <th>Import as</th>
-                  <th>Sample</th>
-                </tr>
-              </thead>
-              <tbody>
+          {preview && (
+            <div className="stack tight">
+              <span className="label">We'll import</span>
+              <div className="row wrap" style={{ gap: 6 }}>
                 {preview.headers.map((header, i) => {
                   const value = mapping[String(i)] ?? 'ignore';
-                  const isAttr = value.startsWith('attr:');
+                  if (value === 'ignore') return null;
+                  const target = value.startsWith('attr:') ? `custom field "${value.slice(5)}"` : FIELD_LABELS[value] ?? value;
                   return (
-                    <tr key={i}>
-                      <td>
-                        <strong>{header || `Column ${i + 1}`}</strong>
-                      </td>
-                      <td style={{ minWidth: 220 }}>
-                        <select className="select sm" value={isAttr ? 'attr' : value} onChange={e => setMapping({ ...mapping, [i]: e.target.value === 'attr' ? `attr:${(header || `column_${i + 1}`).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}` : e.target.value })}>
-                          {FIELD_OPTIONS.map(o => (
-                            <option key={o.value} value={o.value}>
-                              {o.label}
-                            </option>
-                          ))}
-                          <option value="attr">Custom field{isAttr ? `: ${value.slice(5)}` : ''}</option>
-                        </select>
-                      </td>
-                      <td className="secondary small">{preview.rows.map(r => r[i]).filter(Boolean).slice(0, 3).join(' · ')}</td>
-                    </tr>
+                    <span key={i} className="badge">
+                      {header || `Column ${i + 1}`}
+                      {(header || '').trim().toLowerCase() !== target.toLowerCase() ? ` → ${target}` : ''}
+                    </span>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
+              </div>
+              {preview.headers.some((_, i) => (mapping[String(i)] ?? 'ignore') === 'ignore') && (
+                <span className="small muted">
+                  Skipped: {preview.headers.filter((_, i) => (mapping[String(i)] ?? 'ignore') === 'ignore').map((h, i) => h || `Column ${i + 1}`).join(', ')}
+                </span>
+              )}
+              <div>
+                <Button size="sm" variant="ghost" onClick={() => setShowMapping(!showMapping)}>
+                  {showMapping || !phoneMapped ? 'Hide column matching' : 'Change which columns are imported'}
+                </Button>
+              </div>
+            </div>
+          )}
+          {(showMapping || !phoneMapped) && (
+          <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Column</th>
+                    <th>Import as</th>
+                    <th>Sample</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.headers.map((header, i) => {
+                    const value = mapping[String(i)] ?? 'ignore';
+                    const isAttr = value.startsWith('attr:');
+                    return (
+                      <tr key={i}>
+                        <td>
+                          <strong>{header || `Column ${i + 1}`}</strong>
+                        </td>
+                        <td style={{ minWidth: 220 }}>
+                          <select className="select sm" value={isAttr ? 'attr' : value} onChange={e => setMapping({ ...mapping, [i]: e.target.value === 'attr' ? `attr:${(header || `column_${i + 1}`).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')}` : e.target.value })}>
+                            {FIELD_OPTIONS.map(o => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                            <option value="attr">Custom field{isAttr ? `: ${value.slice(5)}` : ''}</option>
+                          </select>
+                        </td>
+                        <td className="secondary small">{preview.rows.map(r => r[i]).filter(Boolean).slice(0, 3).join(' · ')}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
           {!phoneMapped && <Callout tone="warn">Map exactly one column to Phone.</Callout>}
           <div className="grid cols-2">
             <Field label="Tag everyone in this import" hint="Useful for targeting this list later, e.g. expo-2026.">
@@ -593,6 +667,9 @@ export function ContactsPage() {
           <>
             <Button icon={<IconDownload size={16} />} onClick={() => (window.location.href = `/api/contacts/export.csv?${toQuery(activeFilter)}`)}>
               Export
+            </Button>
+            <Button icon={<IconDownload size={16} />} onClick={downloadContactsTemplate}>
+              Download template
             </Button>
             <Button icon={<IconUpload size={16} />} onClick={() => setImporting(true)}>
               Import CSV

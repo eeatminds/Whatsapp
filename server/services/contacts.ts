@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { Core } from '../context.js';
 import { nowIso, parseJson } from '../db/database.js';
 import { badRequest, notFound } from '../lib/errors.js';
-import { normalizePhone } from '../lib/phone.js';
+import { normalizePhone, spreadsheetPhone } from '../lib/phone.js';
 import { parseCsv, toCsv } from '../lib/csv.js';
 import type { SettingsService } from './settings.js';
 import type { TagsService, Tag } from './tags.js';
@@ -169,8 +169,12 @@ export interface ImportResult {
 
 const MAX_IMPORT_ROWS = 100_000;
 
+/** Columns our own export adds that describe WA Reach state, not the person; skipped on re-import. */
+const SYSTEM_COLUMNS = new Set(['consent', 'consent_source', 'whatsapp', 'wa_status', 'source', 'created_at', 'updated_at', 'id']);
+
 export function suggestField(header: string): ImportField {
   const h = header.trim().toLowerCase();
+  if (SYSTEM_COLUMNS.has(h.replace(/[\s-]+/g, '_'))) return 'ignore';
   if (/(phone|mobile|whatsapp|wa number|cell|contact no|contact number|msisdn|^number$|^tel)/.test(h)) return 'phone';
   if (/^(first[\s_-]?name|fname|given[\s_-]?name)$/.test(h)) return 'first_name';
   if (/^(last[\s_-]?name|lname|surname|family[\s_-]?name)$/.test(h)) return 'last_name';
@@ -638,7 +642,7 @@ export class ContactsService {
     const attrKeys = [...new Set(contacts.flatMap(c => Object.keys(c.attributes)))].sort();
     const header = ['phone', 'name', 'email', 'consent', 'consent_source', 'whatsapp', 'tags', 'source', 'created_at', ...attrKeys];
     const body = contacts.map(c => [
-      `+${c.phone}`,
+      spreadsheetPhone(c.phone),
       c.name,
       c.email,
       c.consent,
