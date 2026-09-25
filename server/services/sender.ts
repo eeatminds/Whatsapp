@@ -1,5 +1,6 @@
 import type { Core } from '../context.js';
 import { OpenWAError } from '../openwa/client.js';
+import { HttpError } from '../lib/errors.js';
 import type { MediaService } from './media.js';
 
 export interface OutgoingContent {
@@ -23,9 +24,12 @@ export class Sender {
   constructor(
     private readonly core: Core,
     private readonly media: MediaService,
+    /** In a multi-business install, refuses numbers that belong to another business. */
+    private readonly canUse?: (sessionId: string) => boolean,
   ) {}
 
   async send(sessionId: string, chatId: string, content: OutgoingContent): Promise<SentMessage> {
+    if (this.canUse && !this.canUse(sessionId)) throw new HttpError(403, 'That WhatsApp number does not belong to this account');
     const text = content.text.trim();
     if (text.length > MAX_TEXT) {
       throw new OpenWAError(400, `Message is ${text.length} characters after personalization; WhatsApp allows ${MAX_TEXT}`);

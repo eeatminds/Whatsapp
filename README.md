@@ -1,7 +1,9 @@
 # WA Reach
 
 WhatsApp marketing software built on the [OpenWA](https://github.com/rmyndharis/OpenWA) gateway.
-OpenWA connects your WhatsApp numbers. WA Reach adds everything a marketing team needs on top of them:
+OpenWA connects your WhatsApp numbers. WA Reach adds everything a marketing team needs on top of them. It runs as a **multi-business SaaS**: you host one install and sell monthly access to business owners from an admin panel.
+
+Each business gets:
 
 - contacts with consent tracking
 - segments
@@ -12,6 +14,34 @@ OpenWA connects your WhatsApp numbers. WA Reach adds everything a marketing team
 - delivery, read, reply and click analytics
 
 ![Dashboard](docs/screenshots/dashboard.png)
+
+## Selling it as a service
+
+One install serves many businesses. As the platform owner you sign in to the **admin panel**. Each business owner signs in to their own workspace and sees only their own numbers, contacts, campaigns and inbox.
+
+![Admin panel](docs/screenshots/admin-businesses.png)
+
+| Admin panel | What it does |
+| --- | --- |
+| **Overview** | Monthly recurring revenue, money collected this month, businesses expiring in the next 7 days, and businesses that need attention (expired, suspended, or with a disconnected number). |
+| **Businesses** | Add a business: name, contact, monthly price (default ₹1,000), number of WhatsApp numbers allowed and trial days. You get the owner's login and a temporary password to send them. From a business's page you can edit the plan, record a payment, suspend or reactivate, reset a password, add logins, open their workspace to help them, or delete the business. |
+| **Payments** | Record a payment received by UPI, cash, bank transfer or card. Each payment extends "paid until" by the months paid, starting from the current end date so early renewals are never lost. All payments are listed with the period they cover. |
+| **Settings** | Your brand name (shown on the login page and sidebar), the support contact shown to businesses when they need to renew, currency symbol, default price, default number limit, trial length and grace period. |
+
+How a subscription behaves:
+
+| State | When | What the business can do |
+| --- | --- | --- |
+| **Active** | Paid until a future date. A reminder banner shows in the last 5 days. | Everything |
+| **Grace** | Up to 3 days (configurable) after the paid-until date | Everything, with a "renew now" banner |
+| **Expired** | After the grace period | Sign in and view data. Sending stops and changes are blocked until you record a payment. |
+| **Suspended** | You suspended it | Same as expired, whatever the paid-until date |
+
+Recording a payment or reactivating a business resumes its campaigns and automations within a minute.
+
+Business owners can manage their own team logins, change their password, create an API key and see their payment history under **Account & billing**.
+
+Numbers are isolated per business. All businesses share one OpenWA gateway, and each business's numbers are stored in OpenWA with the business id as a prefix. A business can only list, use or receive webhooks for its own numbers, up to its plan limit.
 
 ## Features
 
@@ -64,8 +94,17 @@ Requires Node 22.13+.
 ```bash
 cd wa-reach
 npm install
-npm run demo          # http://localhost:3000, password: demo-password
+npm run demo          # http://localhost:3000
 ```
+
+Sign in with any of these (password `demo-password` for all):
+
+| Login | What you see |
+| --- | --- |
+| `admin@demo.local` | The admin panel with three businesses and their payments |
+| `owner@chaico.demo` | A business workspace full of sample data |
+| `priya@sharmasalon.demo` | A business whose subscription ends in 3 days |
+| `hello@greenleaf.demo` | A business whose subscription expired (sending blocked) |
 
 The demo runs a simulated OpenWA gateway with sample contacts, templates, automations, two weeks of campaign history and a campaign sending live. Receipts and customer replies arrive over real signed webhooks. Nothing is sent to WhatsApp.
 
@@ -74,15 +113,17 @@ The demo runs a simulated OpenWA gateway with sample contacts, templates, automa
 ```bash
 cd wa-reach
 cp .env.example .env
-# Set OPENWA_API_KEY (32+ random chars) and ADMIN_PASSWORD; optionally PUBLIC_URL and APP_API_KEY.
+# Set ADMIN_EMAIL, ADMIN_PASSWORD and OPENWA_API_KEY (32+ random chars).
 docker compose up -d --build
 ```
 
 Then:
 
-1. Open http://localhost:3000 and sign in.
-2. Go to **WhatsApp numbers → Add number**, and scan the QR code from *WhatsApp → Settings → Linked devices*. You can also link with a pairing code.
-3. Import contacts, then send a test campaign to yourself from the campaign's **Review** step.
+1. Open http://localhost:3000 and sign in with `ADMIN_EMAIL` / `ADMIN_PASSWORD`. You land in the admin panel.
+2. **Businesses → Add business**. Note the owner's email and temporary password.
+3. Sign out and sign in as that owner, or click **Open workspace** in the admin panel.
+4. Go to **WhatsApp numbers → Add number**, and scan the QR code from *WhatsApp → Settings → Linked devices*. You can also link with a pairing code.
+5. Import contacts, then send a test campaign to yourself from the campaign's **Review** step.
 
 The compose file runs the official OpenWA image with the settings WA Reach relies on:
 
@@ -96,9 +137,48 @@ The compose file runs the official OpenWA image with the settings WA Reach relie
 
 OpenWA's own dashboard is published on `127.0.0.1:2785` only.
 
-For click tracking, put WA Reach behind HTTPS (Caddy, nginx or Cloudflare Tunnel) and set `PUBLIC_URL`.
+For click tracking and secure cookies, run it behind HTTPS and set `PUBLIC_URL` (see below).
 
 If Docker Hub rate-limits you, use `OPENWA_IMAGE=ghcr.io/rmyndharis/openwa:0.23` and `docker compose build --build-arg NODE_IMAGE=mirror.gcr.io/library/node:22-alpine`.
+
+### Go live on your own server
+
+You need a Linux VPS (Ubuntu 22.04+ works well) and a domain or subdomain, e.g. `app.yourbrand.com`.
+
+1. **Size the server.** On the `whatsapp-web.js` engine each connected number runs a headless browser that uses about 300–500 MB of RAM. Plan for 2 GB of RAM for up to about 3 numbers, 4 GB for about 8, and 8 GB for about 15–20. Set `OPENWA_MEM_LIMIT` to match.
+2. **Point DNS.** Create an `A` record for `app.yourbrand.com` pointing to the server's IP address.
+3. **Install Docker.** `curl -fsSL https://get.docker.com | sh`
+4. **Get the code and configure it.**
+
+   ```bash
+   git clone <this repository> && cd <repository>/wa-reach
+   cp .env.example .env
+   nano .env
+   ```
+
+   Set these values:
+
+   ```ini
+   ADMIN_EMAIL=you@yourbrand.com
+   ADMIN_PASSWORD=<a strong password>
+   OPENWA_API_KEY=<output of: openssl rand -base64 36>
+   DOMAIN=app.yourbrand.com
+   PUBLIC_URL=https://app.yourbrand.com
+   WA_REACH_BIND=127.0.0.1
+   ```
+
+5. **Open the firewall** for ports 80 and 443 (e.g. `ufw allow 80,443/tcp`), plus SSH.
+6. **Start it.**
+
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+   ```
+
+   Caddy gets an HTTPS certificate automatically. Open `https://app.yourbrand.com` and sign in.
+
+7. **Back up** the `wa-reach-data` and `openwa-data` Docker volumes daily. The first holds every business's data. The second holds the WhatsApp logins, so without it every number has to scan its QR code again.
+
+To update later: `git pull`, then run the same `docker compose … up -d --build` command.
 
 ### Run without Docker
 
@@ -107,10 +187,10 @@ Start OpenWA however you like, then:
 ```bash
 cd wa-reach
 npm install && npm run build
-OPENWA_URL=http://localhost:2785 OPENWA_API_KEY=... ADMIN_PASSWORD=... npm start
+OPENWA_URL=http://localhost:2785 OPENWA_API_KEY=... ADMIN_EMAIL=... ADMIN_PASSWORD=... npm start
 ```
 
-`WEBHOOK_URL` must be an address OpenWA can reach. It defaults to `$PUBLIC_URL/webhooks/openwa`, or to `http://localhost:3000/webhooks/openwa` when `PUBLIC_URL` is unset. If that host is private, add it to OpenWA's `SSRF_ALLOWED_HOSTS`.
+`WEBHOOK_URL` must be an address OpenWA can reach. It defaults to `$PUBLIC_URL/webhooks/openwa`, or to `http://localhost:3000/webhooks/openwa` when `PUBLIC_URL` is unset. Each business's webhook is that URL plus `/<business id>`. If that host is private, add it to OpenWA's `SSRF_ALLOWED_HOSTS`.
 
 ## Configuration
 
@@ -118,18 +198,20 @@ OPENWA_URL=http://localhost:2785 OPENWA_API_KEY=... ADMIN_PASSWORD=... npm start
 | --- | --- | --- |
 | `OPENWA_URL` | `http://localhost:2785` | OpenWA base URL |
 | `OPENWA_API_KEY` | – | OpenWA API key (operator or admin) |
-| `ADMIN_PASSWORD` | generated | Dashboard password. If unset, one is generated into `DATA_DIR/admin-password` and logged on first boot. |
+| `ADMIN_EMAIL` | `admin@example.com` | Platform admin login, created on first boot |
+| `ADMIN_PASSWORD` | generated | Platform admin password on first boot. If unset, one is generated into `DATA_DIR/admin-password` and logged. Change it later in the admin panel's Settings. |
 | `PUBLIC_URL` | – | Public URL of WA Reach. Enables click tracking and secure cookies (for `https`). |
 | `WEBHOOK_URL` | `$PUBLIC_URL/webhooks/openwa` | Where OpenWA posts events |
-| `APP_API_KEY` | – | Enables REST access with `X-API-Key` (min 16 chars) |
 | `OPENWA_WEBHOOK_SECRET` | generated | HMAC secret registered on OpenWA webhooks |
 | `APP_SECRET` | generated | Cookie signing key |
-| `DATA_DIR` | `./data` | SQLite database, media library and generated secrets |
+| `DATA_DIR` | `./data` | Platform database, one SQLite database and media folder per business under `tenants/`, and generated secrets |
+| `DOMAIN` | – | Your domain, for the HTTPS add-on (`docker-compose.prod.yml`) |
+| `WA_REACH_BIND` | `0.0.0.0` | Set to `127.0.0.1` behind Caddy so only HTTPS is reachable |
 | `DEFAULT_TIMEZONE` / `DEFAULT_COUNTRY` | `Asia/Kolkata` / `IN` | Defaults for a new install. Both can be changed in Settings. |
 | `TRUST_PROXY` | private networks | Which reverse proxies may set `X-Forwarded-*` |
 | `PORT` / `HOST` | `3000` / `0.0.0.0` | Listen address |
 
-Business settings are edited in the dashboard under **Settings**:
+Each business edits its own settings in its workspace under **Settings**:
 
 - time zone and default country
 - quiet hours
@@ -159,12 +241,12 @@ Practical guidance:
 
 ## REST API
 
-Every dashboard action is a JSON endpoint under `/api`. With `APP_API_KEY` set, send `X-API-Key: <key>` from your server. Don't put the key in browser code.
+Every dashboard action is a JSON endpoint under `/api`. A business owner creates an API key under **Account & billing**; requests with `X-API-Key: <key>` act on that business only. Send it from a server, never from browser code.
 
 ```bash
 # Add or update a lead (tags are created on the fly; consent is recorded with its source)
 curl -X POST https://reach.example.com/api/contacts \
-  -H "X-API-Key: $APP_API_KEY" -H "Content-Type: application/json" \
+  -H "X-API-Key: $WA_REACH_API_KEY" -H "Content-Type: application/json" \
   -d '{"phone":"+919876543210","name":"Priya","tags":["website-lead"],"consent":"opted_in","consentSource":"website form"}'
 ```
 
@@ -196,7 +278,7 @@ Dark mode follows the operating system:
 
 ```bash
 npm run dev        # API on :3000 with reload + Vite on :5173 (proxying /api)
-npm test           # 61 unit + integration tests against an in-process fake OpenWA
+npm test           # 67 unit + integration tests against an in-process fake OpenWA
 npm run typecheck  # server, web, tests and scripts
 npm run build      # dist/server + dist/web
 ```
@@ -213,6 +295,7 @@ The integration tests drive the real HTTP stack against `test/fake-openwa.ts`, w
 - drip timing
 - webhook signature checks and deduplication
 - auth and CSRF
+- multi-business isolation, subscriptions (grace, expiry, suspension), payments and admin impersonation
 
 ```
 server/
@@ -221,6 +304,8 @@ server/
   openwa/       typed OpenWA REST client
   lib/          phone normalization, templating, CSV, time zones, links, crypto
   db/           SQLite schema (node:sqlite, no native dependencies)
+  platform/     businesses, logins, subscriptions and payments; one runtime per business
+  routes/       REST API, admin panel and account endpoints
 web/src/        React dashboard (Vite)
 test/           vitest suites + fake OpenWA gateway
 scripts/demo.ts demo mode

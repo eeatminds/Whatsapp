@@ -8,7 +8,7 @@ import { MediaService } from './media.js';
 import { TemplatesService } from './templates.js';
 import { MessagesService } from './messages.js';
 import { Sender } from './sender.js';
-import { SessionsService } from './sessions.js';
+import { SessionsService, type SessionScope } from './sessions.js';
 import { CampaignsService } from './campaigns.js';
 import { SequencesService } from './sequences.js';
 import { OutboxService } from './outbox.js';
@@ -17,7 +17,7 @@ import { InboundService } from './inbound.js';
 import { Dispatcher } from './dispatcher.js';
 import { AnalyticsService } from './analytics.js';
 
-export function createServices(core: Core, options: { random?: () => number } = {}) {
+export function createServices(core: Core, options: { random?: () => number; scope?: SessionScope } = {}) {
   const bus = new Bus();
   const settings = new SettingsService(core.db, defaultSettings());
   const tags = new TagsService(core);
@@ -26,8 +26,9 @@ export function createServices(core: Core, options: { random?: () => number } = 
   const media = new MediaService(core);
   const templates = new TemplatesService(core, media, contacts, settings);
   const messages = new MessagesService(core);
-  const sender = new Sender(core, media);
-  const sessions = new SessionsService(core);
+  const scope = options.scope;
+  const sender = new Sender(core, media, scope ? id => scope.owns(id) : undefined);
+  const sessions = new SessionsService(core, scope);
   const campaigns = new CampaignsService(core, settings, segments, media, sender, messages);
   const sequences = new SequencesService(core, settings, media, tags, bus);
   const outbox = new OutboxService(core);

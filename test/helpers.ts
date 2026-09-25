@@ -2,9 +2,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import { openDatabase } from '../server/db/database.js';
 import { OpenWAClient } from '../server/openwa/client.js';
-import { createServices, type Services } from '../server/services/index.js';
+import type { Services } from '../server/services/index.js';
+import { Platform } from '../server/platform/platform.js';
 import { buildApp } from '../server/app.js';
 import { silentLogger, type Core } from '../server/context.js';
 import type { AppConfig } from '../server/config.js';
@@ -32,6 +32,10 @@ export interface TestEnv {
   s: Services;
   app: FastifyInstance;
   config: AppConfig;
+  platform: Platform;
+  tenantId: string;
+  apiKey: string;
+  owner: { email: string; password: string };
   sessionId: string;
   api<T = any>(method: string, url: string, body?: unknown): Promise<{ status: number; body: T }>;
   webhook(event: string, data: Record<string, unknown>, options?: { key?: string; sessionId?: string; secret?: string }): Promise<{ status: number; body: any }>;
@@ -57,6 +61,7 @@ export async function createTestEnv(options: { publicUrl?: string | null; now?: 
     openwa: { url: fake.url, apiKey: fake.apiKey, webhookSecret: 'whsec_test_secret_0123456789' },
     webhookUrl: 'http://wa-reach.test/webhooks/openwa',
     publicUrl: options.publicUrl === undefined ? 'https://reach.example.com' : options.publicUrl,
+    adminEmail: 'admin@example.com',
     adminPassword: 'correct-horse-battery',
     appSecret: 'test-app-secret-test-app-secret-0123456789',
     apiKey: 'integration-api-key-0123456789',
@@ -65,23 +70,30 @@ export async function createTestEnv(options: { publicUrl?: string | null; now?: 
     generated: [],
   };
   const clock = new FakeClock(options.now ?? DAYTIME);
-  const core: Core = {
-    db: openDatabase(':memory:'),
+  const platform = new Platform({
     config,
     openwa: new OpenWAClient({ baseUrl: fake.url, apiKey: fake.apiKey }),
     clock: clock.now,
     log: silentLogger,
-  };
-  const s = createServices(core, { random: () => 0.5 });
+    random: () => 0.5,
+  });
+  platform.bootstrapAdmin('admin@example.com', 'platform-admin-password');
+  const owner = { email: 'owner@shop.example', password: 'owner-password-123' };
+  const { tenant } = platform.createTenant({ name: 'Test Shop', ownerEmail: owner.email, ownerPassword: owner.password, maxNumbers: 5 });
+  const runtime = platform.runtime(tenant.id);
+  runtime.scope.add(session.id);
+  const core: Core = runtime.core;
+  const s = runtime.services;
   s.settings.update({ defaultSessionId: session.id });
-  const app = await buildApp(core, s, { staticDir: null });
+  const apiKey = platform.rotateApiKey(tenant.id);
+  const app = await buildApp(platform, { staticDir: null });
 
   const api: TestEnv['api'] = async (method, url, body) => {
     const response = await app.inject({
       method: method as 'GET',
       url,
       payload: body === undefined ? undefined : (body as object),
-      headers: { 'x-api-key': config.apiKey! },
+      headers: { 'x-api-key': apiKey },
     });
     let parsed: unknown = response.body;
     try {
@@ -105,7 +117,7 @@ export async function createTestEnv(options: { publicUrl?: string | null; now?: 
     const raw = JSON.stringify(envelope);
     const response = await app.inject({
       method: 'POST',
-      url: '/webhooks/openwa',
+      url: `/webhooks/openwa/${tenant.id}`,
       payload: raw,
       headers: {
         'content-type': 'application/json',
@@ -129,7 +141,11 @@ export async function createTestEnv(options: { publicUrl?: string | null; now?: 
     core,
     s,
     app,
-    config,
+    config: core.config,
+    platform,
+    tenantId: tenant.id,
+    apiKey,
+    owner,
     sessionId: session.id,
     api,
     webhook,
@@ -137,7 +153,7 @@ export async function createTestEnv(options: { publicUrl?: string | null; now?: 
     close: async () => {
       await s.dispatcher.stop();
       await app.close();
-      core.db.close();
+      platform.close();
       await fake.close();
       rmSync(mediaDir, { recursive: true, force: true });
     },

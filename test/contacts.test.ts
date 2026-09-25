@@ -116,7 +116,7 @@ describe('WhatsApp numbers', () => {
 
     // Re-sync updates rather than duplicates.
     const sync = await env.api('POST', '/api/system/sync-webhooks');
-    expect(sync.body.results.map((r: { result: string }) => r.result)).toEqual(['created', 'updated']);
+    expect(sync.body.results.map((r: { result: string }) => r.result)).toEqual(['updated', 'updated']);
     expect(env.fake.webhooks).toHaveLength(2);
 
     const duplicate = await env.api('POST', '/api/sessions', { name: 'sales-line' });

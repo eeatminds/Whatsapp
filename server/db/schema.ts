@@ -236,4 +236,10 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX webhook_receipts_age ON webhook_receipts (received_at);
   `,
+  `
+  CREATE TABLE owned_sessions (
+    session_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+  );
+  `,
 ];

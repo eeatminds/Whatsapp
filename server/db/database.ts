@@ -73,12 +73,12 @@ export class Db {
     }
   }
 
-  migrate(): void {
+  migrate(migrations: string[] = MIGRATIONS): void {
     const row = this.get<{ user_version: number }>('PRAGMA user_version');
     const current = row?.user_version ?? 0;
-    for (let version = current; version < MIGRATIONS.length; version++) {
+    for (let version = current; version < migrations.length; version++) {
       this.tx(() => {
-        this.raw.exec(MIGRATIONS[version]);
+        this.raw.exec(migrations[version]);
         this.raw.exec(`PRAGMA user_version = ${version + 1}`);
       });
     }
@@ -90,9 +90,9 @@ export class Db {
   }
 }
 
-export function openDatabase(path: string): Db {
+export function openDatabase(path: string, migrations: string[] = MIGRATIONS): Db {
   const db = new Db(path);
-  db.migrate();
+  db.migrate(migrations);
   return db;
 }
 

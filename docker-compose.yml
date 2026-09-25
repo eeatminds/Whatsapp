@@ -63,15 +63,17 @@ services:
       - OPENWA_URL=http://openwa:2785
       - OPENWA_API_KEY=${OPENWA_API_KEY}
       - WEBHOOK_URL=http://wa-reach:3000/webhooks/openwa
+      # Your platform-admin login (created on first start).
+      - ADMIN_EMAIL=${ADMIN_EMAIL:?Set ADMIN_EMAIL in .env}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
       - PUBLIC_URL=${PUBLIC_URL:-}
-      - APP_API_KEY=${APP_API_KEY:-}
       - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-Asia/Kolkata}
       - DEFAULT_COUNTRY=${DEFAULT_COUNTRY:-IN}
     volumes:
       - wa-reach-data:/app/data
     ports:
-      - '${WA_REACH_PORT:-3000}:3000'
+      # With the HTTPS add-on set WA_REACH_BIND=127.0.0.1 so only Caddy is reachable from outside.
+      - '${WA_REACH_BIND:-0.0.0.0}:${WA_REACH_PORT:-3000}:3000'
 
 volumes:
   openwa-data:

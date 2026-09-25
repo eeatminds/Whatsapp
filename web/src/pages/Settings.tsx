@@ -160,7 +160,9 @@ export function SettingsPage() {
               <dt>Click tracking</dt>
               <dd>{sys.trackingEnabled ? <span className="mono">{sys.publicUrl}/r/…</span> : 'Off (set PUBLIC_URL)'}</dd>
               <dt>REST API</dt>
-              <dd>{sys.apiKeyEnabled ? 'Enabled with the X-API-Key header (APP_API_KEY)' : 'Off (set APP_API_KEY to add contacts from forms, CRMs or n8n)'}</dd>
+              <dd>
+                Create an API key under <a href="/account">Account & billing</a> to add contacts from forms, CRMs or n8n.
+              </dd>
               <dt>Pending replies</dt>
               <dd>{sys.pendingReplies}</dd>
             </dl>
@@ -187,17 +189,6 @@ export function SettingsPage() {
               <Callout tone={sync.some(r => r.result.startsWith('error')) ? 'warn' : 'success'}>
                 {sync.length === 0 ? 'No numbers in OpenWA yet.' : sync.map(r => `${r.name}: ${r.result}`).join(' · ')}
               </Callout>
-            )}
-            {sys.apiKeyEnabled && (
-              <div className="stack tight">
-                <span className="label">Add a contact from your website or CRM</span>
-                <pre className="mono" style={{ margin: 0, padding: 12, background: 'var(--surface-sunken)', borderRadius: 8, overflowX: 'auto', whiteSpace: 'pre' }}>
-                  {`curl -X POST ${sys.publicUrl ?? window.location.origin}/api/contacts \\
-  -H "X-API-Key: $APP_API_KEY" -H "Content-Type: application/json" \\
-  -d '{"phone":"+919876543210","name":"Priya","tags":["website-lead"],
-       "consent":"opted_in","consentSource":"website form"}'`}
-                </pre>
-              </div>
             )}
           </div>
         )}

@@ -1,0 +1,5 @@
+# Automatic HTTPS (Let's Encrypt) for your domain, forwarding to WA Reach.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy wa-reach:3000
+}

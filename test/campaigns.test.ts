@@ -57,7 +57,7 @@ describe('campaign lifecycle', () => {
 
     const texts = env.fake.sent.map(m => m.text!);
     const asha = texts.find(t => t.startsWith('Hi Asha from Pune!'))!;
-    expect(asha).toMatch(/https:\/\/reach\.example\.com\/r\/[A-Za-z0-9]{7}\/[a-f0-9]{16}/);
+    expect(asha).toMatch(new RegExp(`https://reach\\.example\\.com/t/${env.tenantId}/r/[A-Za-z0-9]{7}/[a-f0-9]{16}`));
     expect(asha).not.toContain('shop.example.com');
     expect(asha.endsWith('Reply STOP to unsubscribe.')).toBe(true);
     expect(env.fake.sent.map(m => m.chatId).sort()).toEqual(['919876500001@c.us', '919876500002@c.us', '919876500003@c.us']);
@@ -75,7 +75,7 @@ describe('campaign lifecycle', () => {
     // Reply attribution + click tracking.
     const phoneOfFirst = first.chatId.replace('@c.us', '');
     await env.webhook('message.received', inbound(phoneOfFirst, 'Is the offer valid in store?'));
-    const url = /https:\/\/reach\.example\.com(\/r\/\S+)/.exec(asha)![1];
+    const url = /https:\/\/reach\.example\.com(\/t\/\S+)/.exec(asha)![1];
     const click = await env.app.inject({ method: 'GET', url, headers: { 'user-agent': 'Mozilla/5.0 (iPhone) Safari/604.1' } });
     expect(click.statusCode).toBe(302);
     expect(click.headers.location).toBe('https://shop.example.com/diwali');

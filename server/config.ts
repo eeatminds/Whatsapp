@@ -21,6 +21,8 @@ export interface AppConfig {
   webhookUrl: string;
   /** Public base URL of this app. Needed for click-tracked links; null disables tracking. */
   publicUrl: string | null;
+  /** First platform admin, created on first boot. */
+  adminEmail: string;
   adminPassword: string;
   /** Signs session cookies. */
   appSecret: string;
@@ -108,6 +110,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     webhookUrl,
     publicUrl,
+    adminEmail: (env.ADMIN_EMAIL ?? 'admin@example.com').trim().toLowerCase(),
     adminPassword,
     appSecret: readOrCreateSecret(dataDir, 'app-secret', env.APP_SECRET, 32, generated, 'Cookie signing secret'),
     apiKey: env.APP_API_KEY && env.APP_API_KEY.length >= 16 ? env.APP_API_KEY : null,

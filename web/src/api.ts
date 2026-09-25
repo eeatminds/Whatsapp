@@ -371,3 +371,81 @@ export interface Overview {
   gateway: GatewayStatus;
   sessions: Array<{ id: string; name: string; status: string; phone: string | null }>;
 }
+
+// ---------------------------------------------------------------- platform (SaaS)
+
+export type Access = 'active' | 'grace' | 'expired' | 'suspended';
+
+export interface TenantInfo {
+  id: string;
+  name: string;
+  status: 'active' | 'suspended';
+  access: Access;
+  planName: string;
+  priceMonthly: number;
+  paidUntil: string;
+  daysLeft: number;
+  maxNumbers: number;
+  contactName: string | null;
+  contactPhone: string | null;
+  notes: string | null;
+  apiKeyPrefix: string | null;
+  createdAt: string;
+}
+
+export interface PlatformUser {
+  id: number;
+  email: string;
+  name: string | null;
+  role: 'platform_admin' | 'owner' | 'member';
+  tenantId: string | null;
+  disabled: boolean;
+  lastLoginAt: string | null;
+  createdAt: string;
+}
+
+export interface Brand {
+  brandName: string;
+  supportContact: string;
+  currencySymbol: string;
+}
+
+export interface Me {
+  authenticated: boolean;
+  brand: Brand;
+  user?: PlatformUser;
+  tenant?: TenantInfo | null;
+  impersonating?: boolean;
+}
+
+export interface Payment {
+  id: number;
+  tenantId: string;
+  tenantName: string;
+  amount: number;
+  months: number;
+  method: string;
+  reference: string | null;
+  note: string | null;
+  periodStart: string;
+  periodEnd: string;
+  recordedBy: string | null;
+  paidAt: string;
+}
+
+export interface TenantStats {
+  numbers: number;
+  contacts: number;
+  sentThisMonth: number;
+  campaigns: number;
+}
+
+export interface PlatformSettings {
+  brandName: string;
+  supportContact: string;
+  currencySymbol: string;
+  defaultPrice: number;
+  defaultMaxNumbers: number;
+  trialDays: number;
+  graceDays: number;
+}

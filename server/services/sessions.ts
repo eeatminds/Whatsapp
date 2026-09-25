@@ -1,6 +1,6 @@
 import type { Core } from '../context.js';
 import { OpenWAError, type OpenWASession, type SessionStatus } from '../openwa/client.js';
-import { badRequest } from '../lib/errors.js';
+import { badRequest, HttpError, notFound } from '../lib/errors.js';
 
 export const WEBHOOK_EVENTS = ['message.received', 'message.ack', 'message.failed', 'session.status'];
 
@@ -11,6 +11,22 @@ export interface GatewayStatus {
   lastError: string | null;
   checkedAt: string | null;
   webhookUrl: string;
+}
+
+/**
+ * Limits a business to its own WhatsApp numbers on a gateway shared by many businesses. Without a
+ * scope (single-business installs and most tests) every session on the gateway is visible.
+ */
+export interface SessionScope {
+  /** Every session on the gateway; the platform caches this across businesses. */
+  fetchAll(force: boolean): Promise<OpenWASession[]>;
+  owns(sessionId: string): boolean;
+  add(sessionId: string): void;
+  remove(sessionId: string): void;
+  /** Prepended to OpenWA session names, which are unique across the whole gateway. */
+  namePrefix: string;
+  /** Plan limit on connected numbers; null means unlimited. */
+  maxNumbers(): number | null;
 }
 
 /**
@@ -25,7 +41,10 @@ export class SessionsService {
   private readonly webhookSynced = new Set<string>();
   private readonly webhookInFlight = new Map<string, Promise<'created' | 'updated'>>();
 
-  constructor(private readonly core: Core) {
+  constructor(
+    private readonly core: Core,
+    private readonly scope?: SessionScope,
+  ) {
     this.status = { reachable: false, lastError: null, checkedAt: null, webhookUrl: core.config.webhookUrl };
   }
 
@@ -38,8 +57,9 @@ export class SessionsService {
     if (this.refreshing) return this.refreshing;
     this.refreshing = (async () => {
       try {
-        const sessions = await this.core.openwa.listSessions();
-        this.cache = Array.isArray(sessions) ? sessions : [];
+        const all = this.scope ? await this.scope.fetchAll(force) : await this.core.openwa.listSessions();
+        const sessions = Array.isArray(all) ? all : [];
+        this.cache = this.scope ? sessions.filter(s => this.scope!.owns(s.id)).map(s => this.displayed(s)) : sessions;
         this.cachedAt = Date.now();
         this.status = { ...this.status, reachable: true, lastError: null, checkedAt: new Date().toISOString() };
         // Sessions created in OpenWA's own dashboard get our webhook the first time we see them.
@@ -87,12 +107,37 @@ export class SessionsService {
     this.cachedAt = 0;
   }
 
+  /** Whether this business may use the session (always true without a scope). */
+  owns(sessionId: string): boolean {
+    return !this.scope || this.scope.owns(sessionId);
+  }
+
+  private guard(sessionId: string): void {
+    if (!this.owns(sessionId)) throw notFound('WhatsApp number');
+  }
+
+  private displayed(session: OpenWASession): OpenWASession {
+    const prefix = this.scope?.namePrefix ?? '';
+    return prefix && session.name.startsWith(prefix) ? { ...session, name: session.name.slice(prefix.length) } : { ...session };
+  }
+
   async create(name: string): Promise<OpenWASession> {
     const clean = name.trim();
-    if (!/^[A-Za-z0-9-]{3,50}$/.test(clean)) {
-      throw badRequest('Name must be 3-50 characters: letters, digits and hyphens');
+    const prefix = this.scope?.namePrefix ?? '';
+    const maxLength = 50 - prefix.length;
+    if (!new RegExp(`^[A-Za-z0-9-]{3,${maxLength}}$`).test(clean)) {
+      throw badRequest(`Name must be 3-${maxLength} characters: letters, digits and hyphens`);
     }
-    const session = await this.core.openwa.createSession(clean);
+    if (this.scope) {
+      const limit = this.scope.maxNumbers();
+      const owned = (await this.list(true)).length;
+      if (limit !== null && owned >= limit) {
+        throw new HttpError(403, `Your plan allows ${limit} WhatsApp number${limit === 1 ? '' : 's'}. Remove one or ask to upgrade.`);
+      }
+    }
+    const created = await this.core.openwa.createSession(prefix + clean);
+    this.scope?.add(created.id);
+    const session = this.displayed(created);
     this.invalidate();
     await this.ensureWebhook(session.id);
     try {
@@ -104,32 +149,39 @@ export class SessionsService {
   }
 
   async start(sessionId: string): Promise<void> {
+    this.guard(sessionId);
     await this.ensureWebhook(sessionId).catch(error => this.core.log.warn(`Webhook sync failed: ${String(error)}`));
     await this.core.openwa.startSession(sessionId);
     this.invalidate();
   }
 
   async stop(sessionId: string): Promise<void> {
+    this.guard(sessionId);
     await this.core.openwa.stopSession(sessionId);
     this.invalidate();
   }
 
   async logout(sessionId: string): Promise<void> {
+    this.guard(sessionId);
     await this.core.openwa.logoutSession(sessionId);
     this.invalidate();
   }
 
   async remove(sessionId: string): Promise<void> {
+    this.guard(sessionId);
     await this.core.openwa.deleteSession(sessionId);
+    this.scope?.remove(sessionId);
     this.webhookSynced.delete(sessionId);
     this.invalidate();
   }
 
   qr(sessionId: string) {
+    this.guard(sessionId);
     return this.core.openwa.getQr(sessionId);
   }
 
   pairingCode(sessionId: string, phone: string) {
+    this.guard(sessionId);
     const digits = phone.replace(/\D/g, '');
     if (digits.length < 8) throw badRequest('Enter the full number with country code');
     return this.core.openwa.requestPairingCode(sessionId, digits);

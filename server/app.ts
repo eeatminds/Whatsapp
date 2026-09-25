@@ -3,11 +3,15 @@ import fastifyStatic from '@fastify/static';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Core } from './context.js';
 import type { Services } from './services/index.js';
 import { HttpError } from './lib/errors.js';
+import type { Platform, TenantRuntime } from './platform/platform.js';
+import { toPublicUser } from './platform/platform.js';
+import { registerAccountRoutes, registerAdminRoutes, type AuthInfo } from './routes/admin.js';
 import { OpenWAError } from './openwa/client.js';
-import { parseCookies, safeEqual, serializeCookie, signSession, verifySession, verifyOpenWASignature } from './lib/crypto.js';
+import { parseCookies, serializeCookie, signSession, verifySession, verifyOpenWASignature } from './lib/crypto.js';
 import { isBotUserAgent } from './lib/links.js';
 import { registerApiRoutes } from './routes/api.js';
 import type { WebhookEnvelope } from './services/inbound.js';
@@ -15,6 +19,14 @@ import type { WebhookEnvelope } from './services/inbound.js';
 export const SESSION_COOKIE = 'wr_session';
 const SESSION_TTL_MS = 30 * 24 * 3_600_000;
 const PUBLIC_API = new Set(['/api/auth/login', '/api/auth/logout', '/api/auth/me', '/api/health']);
+
+interface SessionPayload {
+  uid: number;
+  ver: number;
+  /** Business a platform admin has opened. */
+  tid?: string | null;
+  exp: number;
+}
 
 export interface AppOptions {
   /** Directory with the built SPA; null disables static serving (API-only / tests). */
@@ -64,13 +76,6 @@ class LoginLimiter {
   }
 }
 
-export function isAuthenticated(core: Core, request: FastifyRequest): boolean {
-  const apiKey = request.headers['x-api-key'];
-  if (core.config.apiKey && typeof apiKey === 'string' && safeEqual(apiKey, core.config.apiKey)) return true;
-  const token = parseCookies(request.headers.cookie)[SESSION_COOKIE];
-  return !!verifySession(token, core.config.appSecret);
-}
-
 /** Reject cross-site state-changing requests (defense in depth on top of SameSite=Lax cookies). */
 function sameOrigin(request: FastifyRequest): boolean {
   const origin = request.headers.origin;
@@ -83,7 +88,9 @@ function sameOrigin(request: FastifyRequest): boolean {
   }
 }
 
-export async function buildApp(core: Core, services: Services, options: AppOptions = {}): Promise<FastifyInstance> {
+
+export async function buildApp(platform: Platform, options: AppOptions = {}): Promise<FastifyInstance> {
+  const config = platform.config;
   const app = Fastify({
     logger: options.logger ? { level: process.env.LOG_LEVEL ?? 'info' } : false,
     // Trust X-Forwarded-* only from proxies on private networks (Docker, a local nginx/Caddy), so a
@@ -91,6 +98,7 @@ export async function buildApp(core: Core, services: Services, options: AppOptio
     trustProxy: process.env.TRUST_PROXY ?? 'loopback,linklocal,uniquelocal',
     bodyLimit: 2 * 1024 * 1024,
   });
+  app.decorateRequest('auth', null);
 
   app.addHook('onSend', async (_request, reply, payload) => {
     reply.header('X-Content-Type-Options', 'nosniff');
@@ -112,50 +120,126 @@ export async function buildApp(core: Core, services: Services, options: AppOptio
   // ---------------------------------------------------------------- auth
 
   const limiter = new LoginLimiter();
+  const tenantContext = new AsyncLocalStorage<TenantRuntime>();
 
-  app.addHook('onRequest', async (request, reply) => {
+  const sessionCookie = (request: FastifyRequest, payload: Omit<SessionPayload, 'exp'> | null): string => {
+    const secure = config.cookieSecure || request.protocol === 'https';
+    if (!payload) return serializeCookie(SESSION_COOKIE, '', { maxAgeSeconds: 0, secure });
+    const token = signSession({ ...payload, exp: Date.now() + SESSION_TTL_MS }, config.appSecret);
+    return serializeCookie(SESSION_COOKIE, token, { maxAgeSeconds: SESSION_TTL_MS / 1000, secure });
+  };
+
+  const resolveAuth = (request: FastifyRequest): AuthInfo | null => {
+    const apiKey = request.headers['x-api-key'];
+    if (typeof apiKey === 'string' && apiKey) {
+      const tenantId = platform.tenantByApiKey(apiKey);
+      return tenantId ? { user: null, tenantId, via: 'api_key', impersonating: false } : null;
+    }
+    const payload = verifySession<SessionPayload>(parseCookies(request.headers.cookie)[SESSION_COOKIE], config.appSecret);
+    if (!payload) return null;
+    const user = platform.user(payload.uid);
+    if (!user || user.disabled || user.session_version !== payload.ver) return null;
+    if (user.role === 'platform_admin') {
+      const tenantId = payload.tid && platform.db.get('SELECT 1 FROM tenants WHERE id = ?', payload.tid) ? payload.tid : null;
+      return { user, tenantId, via: 'cookie', impersonating: !!tenantId };
+    }
+    return { user, tenantId: user.tenant_id, via: 'cookie', impersonating: false };
+  };
+
+  // Callback-style hook so the rest of the request runs inside the business's context.
+  app.addHook('onRequest', (request, reply, done) => {
     const path = request.url.split('?')[0];
-    if (!path.startsWith('/api/') || PUBLIC_API.has(path)) return;
-    if (!isAuthenticated(core, request)) {
-      return reply.status(401).send({ error: 'Authentication required' });
+    if (!path.startsWith('/api/') || PUBLIC_API.has(path)) return done();
+    const auth = resolveAuth(request);
+    if (!auth) return void reply.status(401).send({ error: 'Authentication required' });
+    if (request.method !== 'GET' && request.method !== 'HEAD' && auth.via === 'cookie' && !sameOrigin(request)) {
+      return void reply.status(403).send({ error: 'Cross-origin request refused' });
     }
-    if (request.method !== 'GET' && request.method !== 'HEAD' && !sameOrigin(request)) {
-      return reply.status(403).send({ error: 'Cross-origin request refused' });
+    request.auth = auth;
+    const isAdmin = auth.user?.role === 'platform_admin';
+    if (path.startsWith('/api/admin/')) {
+      if (!isAdmin) return void reply.status(403).send({ error: 'Platform admins only' });
+      return done();
     }
+    if (!auth.tenantId) {
+      return void reply.status(403).send({ error: isAdmin ? 'Open a business from the admin panel first' : 'No business on this account' });
+    }
+    if (path.startsWith('/api/account')) return done();
+    // A lapsed or suspended business can still look around, but not change anything.
+    if (request.method !== 'GET' && request.method !== 'HEAD' && !isAdmin) {
+      try {
+        platform.assertWritable(auth.tenantId);
+      } catch (error) {
+        const { status, body } = errorResponse(error);
+        return void reply.status(status).send(body);
+      }
+    }
+    let runtime: TenantRuntime;
+    try {
+      runtime = platform.runtime(auth.tenantId);
+    } catch {
+      return void reply.status(404).send({ error: 'Business not found' });
+    }
+    tenantContext.run(runtime, () => done());
   });
 
   app.get('/api/health', async () => ({ ok: true }));
 
-  app.get('/api/auth/me', async request => ({ authenticated: isAuthenticated(core, request) }));
+  app.get('/api/auth/me', async request => {
+    const settings = platform.settings();
+    const brand = { brandName: settings.brandName, supportContact: settings.supportContact, currencySymbol: settings.currencySymbol };
+    const auth = resolveAuth(request);
+    if (!auth || !auth.user) return { authenticated: false, brand };
+    return {
+      authenticated: true,
+      brand,
+      user: toPublicUser(auth.user),
+      tenant: auth.tenantId ? platform.tenant(auth.tenantId) : null,
+      impersonating: auth.impersonating,
+    };
+  });
 
   app.post('/api/auth/login', async (request, reply) => {
     if (!limiter.allow(request.ip)) return reply.status(429).send({ error: 'Too many attempts. Try again in 15 minutes.' });
-    const password = (request.body as { password?: unknown } | undefined)?.password;
-    if (typeof password !== 'string' || !safeEqual(password, core.config.adminPassword)) {
-      return reply.status(401).send({ error: 'Wrong password' });
-    }
+    const body = (request.body ?? {}) as { email?: unknown; password?: unknown };
+    if (typeof body.email !== 'string' || typeof body.password !== 'string') return reply.status(400).send({ error: 'Enter your email and password' });
+    const user = platform.authenticate(body.email, body.password);
+    if (!user) return reply.status(401).send({ error: 'Wrong email or password' });
     limiter.reset(request.ip);
-    const token = signSession({ sub: 'admin', exp: Date.now() + SESSION_TTL_MS }, core.config.appSecret);
-    const secure = core.config.cookieSecure || request.protocol === 'https';
-    reply.header('Set-Cookie', serializeCookie(SESSION_COOKIE, token, { maxAgeSeconds: SESSION_TTL_MS / 1000, secure }));
+    reply.header('Set-Cookie', sessionCookie(request, { uid: user.id, ver: user.session_version }));
     return { authenticated: true };
   });
 
-  app.post('/api/auth/logout', async (_request, reply) => {
-    reply.header('Set-Cookie', serializeCookie(SESSION_COOKIE, '', { maxAgeSeconds: 0 }));
+  app.post('/api/auth/logout', async (request, reply) => {
+    reply.header('Set-Cookie', sessionCookie(request, null));
     return { authenticated: false };
   });
 
-  // ---------------------------------------------------------------- OpenWA webhook (raw body, HMAC)
+  const enter = (request: FastifyRequest, tenantId: string | null): string => {
+    const user = request.auth!.user!;
+    return sessionCookie(request, { uid: user.id, ver: user.session_version, tid: tenantId });
+  };
+
+  await app.register(async scope => registerAdminRoutes(scope, platform, enter), { prefix: '/api/admin' });
+  await app.register(async scope => registerAccountRoutes(scope, platform), { prefix: '/api/account' });
+
+  // ---------------------------------------------------------------- OpenWA webhooks (raw body, HMAC), one URL per business
 
   await app.register(async scope => {
     scope.addContentTypeParser('application/json', { parseAs: 'buffer', bodyLimit: 5 * 1024 * 1024 }, (_req, body, done) => {
       done(null, body);
     });
-    scope.post('/webhooks/openwa', async (request, reply) => {
+    scope.post('/webhooks/openwa/:tenantId', async (request, reply) => {
       const raw = request.body as Buffer;
-      if (!Buffer.isBuffer(raw) || !verifyOpenWASignature(raw, request.headers['x-openwa-signature'] as string | undefined, core.config.openwa.webhookSecret)) {
+      if (!Buffer.isBuffer(raw) || !verifyOpenWASignature(raw, request.headers['x-openwa-signature'] as string | undefined, config.openwa.webhookSecret)) {
         return reply.status(401).send({ error: 'Invalid signature' });
+      }
+      const { tenantId } = request.params as { tenantId: string };
+      let runtime: TenantRuntime;
+      try {
+        runtime = platform.runtime(tenantId);
+      } catch {
+        return reply.status(404).send({ error: 'Unknown business' });
       }
       let envelope: WebhookEnvelope;
       try {
@@ -163,30 +247,45 @@ export async function buildApp(core: Core, services: Services, options: AppOptio
       } catch {
         return reply.status(400).send({ error: 'Invalid JSON' });
       }
+      // A webhook can only speak for sessions this business owns.
+      if (typeof envelope?.sessionId === 'string' && !runtime.scope.owns(envelope.sessionId)) return { ok: true, outcome: 'ignored' };
       const key = request.headers['x-openwa-idempotency-key'];
-      const outcome = await services.inbound.handle(envelope, typeof key === 'string' ? key : undefined);
+      const outcome = await runtime.services.inbound.handle(envelope, typeof key === 'string' ? key : undefined);
       return { ok: true, outcome };
     });
   });
 
   // ---------------------------------------------------------------- click tracking
 
-  const redirect = async (request: FastifyRequest<{ Params: { code: string; token?: string } }>, reply: FastifyReply) => {
-    const { code, token } = request.params;
-    if (!/^[A-Za-z0-9]{4,16}$/.test(code) || (token && !/^[a-f0-9]{8,32}$/.test(token))) {
+  const redirect = async (request: FastifyRequest<{ Params: { tenantId: string; code: string; token?: string } }>, reply: FastifyReply) => {
+    const { tenantId, code, token } = request.params;
+    if (!/^[a-z0-9]{4,12}$/.test(tenantId) || !/^[A-Za-z0-9]{4,16}$/.test(code) || (token && !/^[a-f0-9]{8,32}$/.test(token))) {
+      return reply.status(404).type('text/plain').send('Link not found');
+    }
+    let runtime: TenantRuntime;
+    try {
+      runtime = platform.runtime(tenantId);
+    } catch {
       return reply.status(404).type('text/plain').send('Link not found');
     }
     const userAgent = request.headers['user-agent'];
-    const url = services.campaigns.recordClick(code, token ?? null, userAgent, isBotUserAgent(userAgent));
+    const url = runtime.services.campaigns.recordClick(code, token ?? null, userAgent, isBotUserAgent(userAgent));
     if (!url) return reply.status(404).type('text/plain').send('Link not found');
     reply.header('Cache-Control', 'no-store');
     return reply.redirect(url, 302);
   };
-  app.get('/r/:code', redirect);
-  app.get('/r/:code/:token', redirect);
+  app.get('/t/:tenantId/r/:code', redirect);
+  app.get('/t/:tenantId/r/:code/:token', redirect);
 
-  // ---------------------------------------------------------------- API + SPA
+  // ---------------------------------------------------------------- business API + SPA
 
+  const current = (): TenantRuntime => {
+    const runtime = tenantContext.getStore();
+    if (!runtime) throw new HttpError(403, 'No business selected');
+    return runtime;
+  };
+  const core = new Proxy({} as Core, { get: (_target, key) => current().core[key as keyof Core] });
+  const services = new Proxy({} as Services, { get: (_target, key) => current().services[key as keyof Services] });
   await app.register(async scope => registerApiRoutes(scope, core, services), { prefix: '/api' });
 
   const staticDir = options.staticDir;

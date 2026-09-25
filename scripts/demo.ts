@@ -13,11 +13,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeOpenWA } from '../test/fake-openwa.js';
 import { loadConfig } from '../server/config.js';
-import { openDatabase, nowIso } from '../server/db/database.js';
 import { OpenWAClient } from '../server/openwa/client.js';
-import { createServices } from '../server/services/index.js';
+import { Platform } from '../server/platform/platform.js';
 import { buildApp } from '../server/app.js';
-import type { Core } from '../server/context.js';
 
 const PORT = Number(process.env.PORT ?? 3000);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -52,17 +50,40 @@ async function main(): Promise<void> {
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD ?? 'demo-password',
     PUBLIC_URL: `http://localhost:${PORT}`,
     WEBHOOK_URL: `http://127.0.0.1:${PORT}/webhooks/openwa`,
-    APP_API_KEY: 'demo-api-key-0123456789',
+    ADMIN_EMAIL: 'admin@demo.local',
   });
   let offset = 0;
-  const core: Core = {
-    db: openDatabase(config.dbPath),
+  const platform = new Platform({
     config,
     openwa: new OpenWAClient({ baseUrl: fake.url, apiKey: fake.apiKey }),
     clock: () => new Date(Date.now() + offset),
     log: { info: () => {}, warn: () => {}, error: console.error, debug: () => {} },
-  };
-  const s = createServices(core);
+  });
+  platform.bootstrapAdmin(config.adminEmail, config.adminPassword);
+  platform.updateSettings({ brandName: 'WA Reach', supportContact: 'WhatsApp +91 98450 00000' });
+  const DEMO_PASSWORD = config.adminPassword;
+
+  // ---------------------------------------------------------------- businesses (customers of the platform)
+  offset = -75 * 86_400_000;
+  const chai = platform.createTenant({ name: 'Chai & Co.', ownerEmail: 'owner@chaico.demo', ownerName: 'Arjun', ownerPassword: DEMO_PASSWORD, trialDays: 0, maxNumbers: 2, contactPhone: '+91 98450 11111' });
+  const salon = platform.createTenant({ name: 'Sharma Salon', ownerEmail: 'priya@sharmasalon.demo', ownerName: 'Priya', ownerPassword: DEMO_PASSWORD, trialDays: 0 });
+  const cafe = platform.createTenant({ name: 'Green Leaf Cafe', ownerEmail: 'hello@greenleaf.demo', ownerName: 'Rahul', ownerPassword: DEMO_PASSWORD, trialDays: 0 });
+  const admin = platform.authenticate(config.adminEmail, config.adminPassword)!;
+  platform.recordPayment(chai.tenant.id, { months: 1, amount: 1000, method: 'upi', reference: 'UPI-50231' }, admin.id);
+  platform.recordPayment(salon.tenant.id, { months: 1, amount: 1000, method: 'cash' }, admin.id);
+  platform.recordPayment(cafe.tenant.id, { months: 1, amount: 1000, method: 'upi', reference: 'UPI-50388' }, admin.id);
+  offset = -45 * 86_400_000;
+  platform.recordPayment(chai.tenant.id, { months: 3, amount: 2800, method: 'bank_transfer', note: 'Quarterly, ₹200 discount' }, admin.id);
+  platform.recordPayment(salon.tenant.id, { months: 1, amount: 1000, method: 'upi', reference: 'UPI-51120' }, admin.id);
+  offset = 0;
+  // The salon is due for renewal in a few days; the cafe stopped paying 12 days ago.
+  platform.updateTenant(salon.tenant.id, { paidUntil: new Date(Date.now() + 3 * 86_400_000).toISOString() });
+  platform.updateTenant(cafe.tenant.id, { paidUntil: new Date(Date.now() - 12 * 86_400_000).toISOString() });
+
+  const runtime = platform.runtime(chai.tenant.id);
+  runtime.scope.add(session.id);
+  const core = runtime.core;
+  const s = runtime.services;
 
   // ---------------------------------------------------------------- settings, tags, contacts
   s.settings.update({
@@ -176,9 +197,9 @@ async function main(): Promise<void> {
   s.contacts.upsert({ phone: '+91 98450 77002', name: 'Gita Menon', tags: ['website-lead'], consent: 'opted_in', consentSource: 'Website form' });
 
   // ---------------------------------------------------------------- serve
-  const app = await buildApp(core, s, { staticDir: join(here, '..', 'dist', 'web') });
-  s.dispatcher.start();
+  const app = await buildApp(platform, { staticDir: join(here, '..', 'dist', 'web') });
   await app.listen({ host: '127.0.0.1', port: PORT });
+  platform.start();
   await s.sessions.syncWebhooks();
   gatewayOptions.simulate = {
     readRate: 0.72,
@@ -197,7 +218,8 @@ async function main(): Promise<void> {
   s.campaigns.launch(live.id, {});
 
   console.log(`\n  WA Reach demo running at http://localhost:${PORT}`);
-  console.log(`  Password: ${config.adminPassword}`);
+  console.log(`  Admin panel:   admin@demo.local / ${DEMO_PASSWORD}`);
+  console.log(`  A business:    owner@chaico.demo / ${DEMO_PASSWORD}`);
   console.log(`  Simulated OpenWA gateway: ${fake.url} (no real WhatsApp messages are sent)\n`);
 }
 

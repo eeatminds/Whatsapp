@@ -16,7 +16,7 @@ describe('webhook security and idempotency', () => {
     expect(bad.status).toBe(401);
     const unsigned = await env.app.inject({
       method: 'POST',
-      url: '/webhooks/openwa',
+      url: `/webhooks/openwa/${env.tenantId}`,
       payload: JSON.stringify({ event: 'message.received', sessionId: env.sessionId, data: inbound('919876511111', 'hi') }),
       headers: { 'content-type': 'application/json' },
     });
@@ -189,9 +189,9 @@ describe('auth', () => {
   it('requires login or API key, and logs in with the admin password', async () => {
     const anon = await env.app.inject({ method: 'GET', url: '/api/contacts' });
     expect(anon.statusCode).toBe(401);
-    const wrong = await env.app.inject({ method: 'POST', url: '/api/auth/login', payload: { password: 'nope' } });
+    const wrong = await env.app.inject({ method: 'POST', url: '/api/auth/login', payload: { email: env.owner.email, password: 'nope' } });
     expect(wrong.statusCode).toBe(401);
-    const login = await env.app.inject({ method: 'POST', url: '/api/auth/login', payload: { password: env.config.adminPassword } });
+    const login = await env.app.inject({ method: 'POST', url: '/api/auth/login', payload: env.owner });
     expect(login.statusCode).toBe(200);
     const cookie = String(login.headers['set-cookie']).split(';')[0];
     expect(cookie).toMatch(/^wr_session=/);
