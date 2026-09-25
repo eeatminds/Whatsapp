@@ -86,6 +86,31 @@ describe('platform admin', () => {
   });
 });
 
+describe('sending limits', () => {
+  it('are set by the platform admin per business; the owner cannot raise them', async () => {
+    const admin = await login('admin@example.com', 'platform-admin-password');
+    await as(admin, 'PUT', '/api/admin/settings', { defaultDailyCap: 100, defaultPerMinuteCap: 5 });
+    const created = await as(admin, 'POST', '/api/admin/tenants', { name: 'New Shop', ownerEmail: 'new@shop.example', ownerPassword: 'new-shop-password' });
+    const id = created.body.tenant.id;
+    // New businesses start from the admin's defaults.
+    const detail = await as(admin, 'GET', `/api/admin/tenants/${id}`);
+    expect(detail.body.sending).toMatchObject({ dailyCapPerSession: 100, sessionMaxPerMinute: 5, defaultPerMinute: 5 });
+
+    // The owner's attempt to raise limits is ignored; other settings still save.
+    const owner = await login('new@shop.example', 'new-shop-password');
+    const saved = await as(owner, 'PUT', '/api/settings', { businessName: 'Renamed', sending: { dailyCapPerSession: 5000 } });
+    expect(saved.status).toBe(200);
+    expect(saved.body).toMatchObject({ businessName: 'Renamed', sending: { dailyCapPerSession: 100 } });
+
+    // The admin raises the limit month on month.
+    const raised = await as(admin, 'PUT', `/api/admin/tenants/${id}/sending`, { dailyCapPerSession: 200, sessionMaxPerMinute: 4 });
+    expect(raised.body).toMatchObject({ dailyCapPerSession: 200, sessionMaxPerMinute: 4, defaultPerMinute: 4 });
+    expect((await as(owner, 'GET', '/api/settings')).body.sending.dailyCapPerSession).toBe(200);
+    // Owners can't reach the admin endpoint.
+    expect((await as(owner, 'PUT', `/api/admin/tenants/${id}/sending`, { dailyCapPerSession: 9999 })).status).toBe(403);
+  });
+});
+
 describe('subscriptions', () => {
   it('stops changes after the paid period plus grace, and a payment restores access', async () => {
     const tenant = env.platform.tenant(env.tenantId);

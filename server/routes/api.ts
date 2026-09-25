@@ -362,5 +362,10 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   // ---------------------------------------------------------------- settings
 
   app.get('/settings', async () => s.settings.get());
-  app.put('/settings', async request => s.settings.update(request.body));
+  app.put('/settings', async request => {
+    // Sending limits are part of the plan the platform admin sells; a business can't raise its own.
+    const body = { ...((request.body as Record<string, unknown> | null) ?? {}) };
+    if (request.auth?.user?.role !== 'platform_admin') delete body.sending;
+    return s.settings.update(body);
+  });
 }

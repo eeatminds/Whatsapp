@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, del, patch, post, put, useApi, errorMessage, type Payment, type PlatformSettings, type PlatformUser, type TenantInfo, type TenantStats } from '../api';
+import { SendingLimitsForm, type SendingLimits } from '../components/SendingLimits';
 import { Badge, Button, Callout, Card, Drawer, Empty, ErrorNote, Field, Loading, Modal, PageHeader, StatTile, useConfirm, useToast } from '../components/ui';
 import { IconCopy, IconPlus, IconSearch } from '../components/icons';
 import { useSession, money } from '../session';
@@ -330,7 +331,7 @@ function BusinessDrawer({ tenantId, onClose, onChanged }: { tenantId: string; on
   const navigate = useNavigate();
   const toast = useToast();
   const { confirm, dialog } = useConfirm();
-  const { data, reload } = useApi<{ tenant: TenantInfo; stats: TenantStats; users: PlatformUser[]; payments: Payment[] }>(`/api/admin/tenants/${tenantId}`);
+  const { data, reload } = useApi<{ tenant: TenantInfo; stats: TenantStats; users: PlatformUser[]; payments: Payment[]; sending: SendingLimits }>(`/api/admin/tenants/${tenantId}`);
   const [paying, setPaying] = useState(false);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<{ name: string; priceMonthly: string; maxNumbers: string; paidUntil: string; contactPhone: string; notes: string }>({
@@ -456,6 +457,21 @@ function BusinessDrawer({ tenantId, onClose, onChanged }: { tenantId: string; on
             </Button>
           )}
         </div>
+      </Card>
+
+      <Card title="Sending limits" subtitle="Only you can change these. The business sees them in its Settings.">
+        <SendingLimitsForm
+          value={data.sending}
+          onSave={async next => {
+            try {
+              await put(`/api/admin/tenants/${tenant.id}/sending`, next);
+              toast.success('Sending limits saved');
+              void reload();
+            } catch (err) {
+              toast.error(errorMessage(err));
+            }
+          }}
+        />
       </Card>
 
       <Card title="Logins" bodyClass="">
@@ -839,6 +855,12 @@ export function AdminSettingsPage() {
           </Field>
           <Field label="Grace period (days)" hint="Days after the renewal date that sending keeps working.">
             <input className="input" type="number" min={0} value={value.graceDays} onChange={e => set({ graceDays: Number(e.target.value) })} />
+          </Field>
+          <Field label="Messages per day, per number" hint="Starting daily limit. Raise it per business later.">
+            <input className="input" type="number" min={1} value={value.defaultDailyCap} onChange={e => set({ defaultDailyCap: Number(e.target.value) })} />
+          </Field>
+          <Field label="Max messages per minute, per number">
+            <input className="input" type="number" min={1} max={60} value={value.defaultPerMinuteCap} onChange={e => set({ defaultPerMinuteCap: Number(e.target.value) })} />
           </Field>
         </div>
       </Card>

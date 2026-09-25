@@ -448,4 +448,6 @@ export interface PlatformSettings {
   defaultMaxNumbers: number;
   trialDays: number;
   graceDays: number;
+  defaultDailyCap: number;
+  defaultPerMinuteCap: number;
 }

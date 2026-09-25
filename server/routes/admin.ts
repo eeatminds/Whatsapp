@@ -40,8 +40,16 @@ export async function registerAdminRoutes(app: FastifyInstance, platform: Platfo
 
   app.get('/tenants/:id', async request => {
     const { id } = idParam.parse(request.params);
-    return { tenant: platform.tenant(id), stats: platform.tenantStats(id), users: platform.users(id), payments: platform.payments({ tenantId: id }) };
+    return {
+      tenant: platform.tenant(id),
+      stats: platform.tenantStats(id),
+      users: platform.users(id),
+      payments: platform.payments({ tenantId: id }),
+      sending: platform.sendingLimits(id),
+    };
   });
+
+  app.put('/tenants/:id/sending', async request => platform.setSendingLimits(idParam.parse(request.params).id, request.body));
 
   app.patch('/tenants/:id', async request => platform.updateTenant(idParam.parse(request.params).id, request.body));
 

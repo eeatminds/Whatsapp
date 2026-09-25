@@ -10,6 +10,7 @@ import type { OpenWAApi, OpenWASession } from '../openwa/client.js';
 import { createServices, type Services } from '../services/index.js';
 import type { SessionScope } from '../services/sessions.js';
 import { MARKETING_SOURCES } from '../services/messages.js';
+import { settingsSchema, type Settings } from '../services/settings.js';
 import { PLATFORM_MIGRATIONS } from './schema.js';
 import { hashPassword, temporaryPassword, verifyPassword } from './passwords.js';
 
@@ -88,6 +89,9 @@ export const platformSettingsSchema = z.object({
   defaultMaxNumbers: z.coerce.number().int().min(1).max(100),
   trialDays: z.coerce.number().int().min(0).max(90),
   graceDays: z.coerce.number().int().min(0).max(30),
+  /** Starting sending limits for a new business; the admin raises them per business over time. */
+  defaultDailyCap: z.coerce.number().int().min(1).max(100_000),
+  defaultPerMinuteCap: z.coerce.number().int().min(1).max(60),
 });
 export type PlatformSettings = z.infer<typeof platformSettingsSchema>;
 
@@ -99,7 +103,13 @@ const DEFAULT_SETTINGS: PlatformSettings = {
   defaultMaxNumbers: 1,
   trialDays: 7,
   graceDays: 3,
+  defaultDailyCap: 250,
+  defaultPerMinuteCap: 10,
 };
+
+/** Sending limits only the platform admin may change (per business). */
+export type SendingLimits = Settings['sending'];
+const sendingLimitsSchema = settingsSchema.shape.sending.partial();
 
 const email = z.string().trim().toLowerCase().email().max(200);
 const password = z.string().min(8, 'Passwords need at least 8 characters').max(200);
@@ -398,9 +408,31 @@ export class Platform {
     });
     const { user, password: plain } = this.addUser(id, { email: data.ownerEmail, name: data.ownerName, role: 'owner', password: data.ownerPassword });
     const runtime = this.runtime(id);
-    runtime.services.settings.update({ businessName: data.name });
+    runtime.services.settings.update({
+      businessName: data.name,
+      sending: {
+        dailyCapPerSession: settings.defaultDailyCap,
+        sessionMaxPerMinute: settings.defaultPerMinuteCap,
+        defaultPerMinute: Math.min(runtime.services.settings.get().sending.defaultPerMinute, settings.defaultPerMinuteCap),
+      },
+    });
     if (this.supervisor) this.reconcile();
     return { tenant: this.tenant(id), owner: user, password: plain };
+  }
+
+  sendingLimits(tenant: string): SendingLimits {
+    this.tenantRow(tenant);
+    return this.runtime(tenant).services.settings.get().sending;
+  }
+
+  setSendingLimits(tenant: string, input: unknown): SendingLimits {
+    this.tenantRow(tenant);
+    const patch = sendingLimitsSchema.parse(input);
+    const settings = this.runtime(tenant).services.settings;
+    const next = { ...settings.get().sending, ...patch };
+    // A default campaign pace above the per-number ceiling would never be reached; keep them consistent.
+    next.defaultPerMinute = Math.min(next.defaultPerMinute, next.sessionMaxPerMinute);
+    return settings.update({ sending: next }).sending;
   }
 
   updateTenant(tenant: string, input: unknown): Tenant {

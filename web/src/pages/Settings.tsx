@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { post, put, useApi, errorMessage, type Settings, type SystemInfo } from '../api';
 import { Badge, Button, Callout, Card, ErrorNote, Field, Loading, NumberInput, PageHeader, Toggle, useToast } from '../components/ui';
 import { SessionSelect } from '../components/pickers';
+import { useSession } from '../session';
 
 const TIMEZONES = (() => {
   try {
@@ -21,6 +22,10 @@ export function SettingsPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [sync, setSync] = useState<Array<{ name: string; result: string }> | null>(null);
   const toast = useToast();
+  const { me } = useSession();
+  // Sending limits are part of the plan; only the platform admin (e.g. viewing this business) can change them.
+  const canEditLimits = me.user?.role === 'platform_admin';
+  const provider = me.brand.supportContact ? `Contact ${me.brand.supportContact} to raise them.` : 'Contact your provider to raise them.';
 
   useEffect(() => {
     if (data) {
@@ -84,23 +89,35 @@ export function SettingsPage() {
         </div>
       </Card>
 
-      <Card title="Sending limits" subtitle="Unofficial WhatsApp connections get restricted when they send too much, too fast. These limits protect your numbers.">
+      <Card
+        title="Sending limits"
+        subtitle={
+          canEditLimits
+            ? 'Set by you as the platform admin. The business sees these but cannot change them.'
+            : `These limits are part of your plan and protect your numbers from being restricted. ${provider}`
+        }
+      >
         <div className="grid cols-3">
-          <Field label="Max messages per minute, per number">
-            <NumberInput value={form.sending.sessionMaxPerMinute} min={1} max={60} onChange={v => setForm({ ...form, sending: { ...form.sending, sessionMaxPerMinute: v } })} />
-          </Field>
           <Field label="Max marketing messages per day, per number" hint="Replies and confirmations don't count.">
-            <NumberInput value={form.sending.dailyCapPerSession} min={1} max={100000} onChange={v => setForm({ ...form, sending: { ...form.sending, dailyCapPerSession: v } })} />
+            <NumberInput disabled={!canEditLimits} value={form.sending.dailyCapPerSession} min={1} max={100000} onChange={v => setForm({ ...form, sending: { ...form.sending, dailyCapPerSession: v } })} />
           </Field>
-          <Field label="Default campaign pace (per minute)">
-            <NumberInput value={form.sending.defaultPerMinute} min={1} max={60} onChange={v => setForm({ ...form, sending: { ...form.sending, defaultPerMinute: v } })} />
+          <Field label="Max messages per minute, per number">
+            <NumberInput disabled={!canEditLimits} value={form.sending.sessionMaxPerMinute} min={1} max={60} onChange={v => setForm({ ...form, sending: { ...form.sending, sessionMaxPerMinute: v } })} />
+          </Field>
+          <Field label="Default campaign pace (per minute)" hint={canEditLimits ? undefined : 'You can choose a slower pace on each campaign.'}>
+            <NumberInput disabled={!canEditLimits} value={form.sending.defaultPerMinute} min={1} max={60} onChange={v => setForm({ ...form, sending: { ...form.sending, defaultPerMinute: v } })} />
           </Field>
           <Field label="Frequency cap (hours)" hint="Skip anyone who got a marketing message this recently. 0 = off.">
-            <NumberInput value={form.sending.frequencyCapHours} min={0} max={720} onChange={v => setForm({ ...form, sending: { ...form.sending, frequencyCapHours: v } })} />
+            <NumberInput disabled={!canEditLimits} value={form.sending.frequencyCapHours} min={0} max={720} onChange={v => setForm({ ...form, sending: { ...form.sending, frequencyCapHours: v } })} />
           </Field>
           <Field label="Pause a campaign after this many failures in a row">
-            <NumberInput value={form.sending.breakerThreshold} min={1} max={100} onChange={v => setForm({ ...form, sending: { ...form.sending, breakerThreshold: v } })} />
+            <NumberInput disabled={!canEditLimits} value={form.sending.breakerThreshold} min={1} max={100} onChange={v => setForm({ ...form, sending: { ...form.sending, breakerThreshold: v } })} />
           </Field>
+        </div>
+      </Card>
+
+      <Card title="Reporting">
+        <div className="grid cols-3">
           <Field label="Reply attribution window (hours)" hint="A reply within this time counts toward the campaign.">
             <NumberInput value={form.attributionWindowHours} min={1} max={720} onChange={v => setForm({ ...form, attributionWindowHours: v })} />
           </Field>

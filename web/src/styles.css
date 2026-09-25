@@ -536,6 +536,13 @@ code,
   box-shadow: var(--focus);
   outline: none;
 }
+.input:disabled,
+.select:disabled,
+.textarea:disabled {
+  background: var(--surface-sunken);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
 .input::placeholder,
 .textarea::placeholder {
   color: var(--text-muted);
