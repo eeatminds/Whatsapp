@@ -353,6 +353,7 @@ export interface SystemInfo {
   publicUrl: string | null;
   trackingEnabled: boolean;
   apiKeyEnabled: boolean;
+  demo?: boolean;
   timezone: string;
   pendingReplies: number;
   acceptedMimeTypes: string[];

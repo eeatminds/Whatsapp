@@ -42,6 +42,7 @@ async function main(): Promise<void> {
   const session = fake.addSession('demo-store', 'ready', '919900011122');
 
   const dataDir = process.env.DATA_DIR ?? mkdtempSync(join(tmpdir(), 'wa-reach-demo-'));
+  process.env.WA_REACH_DEMO = '1';
   const config = loadConfig({
     ...process.env,
     DATA_DIR: dataDir,

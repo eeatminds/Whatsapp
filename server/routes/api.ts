@@ -35,6 +35,7 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
       publicUrl: core.config.publicUrl,
       trackingEnabled: !!core.config.publicUrl,
       apiKeyEnabled: !!core.config.apiKey,
+      demo: process.env.WA_REACH_DEMO === '1',
       timezone: settings.timezone,
       pendingReplies: s.outbox.pendingCount(),
       acceptedMimeTypes: ACCEPTED_MIME_TYPES,

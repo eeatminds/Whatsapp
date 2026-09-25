@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { del, get, post, put, errorMessage, type Session, type Settings } from '../api';
+import { del, get, post, put, useApi, errorMessage, type Session, type Settings, type SystemInfo } from '../api';
 import { Badge, Button, Callout, Card, Empty, ErrorNote, Field, Loading, Modal, PageHeader, Segmented, useConfirm, useToast } from '../components/ui';
 import { IconPlus, IconRefresh } from '../components/icons';
 import { useSessions } from '../components/pickers';
@@ -148,6 +148,7 @@ function LinkModal({ session, onClose }: { session: Session; onClose: () => void
 
 export function NumbersPage() {
   const { data, error, loading, reload } = useSessions({ poll: 8000 });
+  const { data: system } = useApi<SystemInfo>('/api/system');
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
@@ -185,6 +186,11 @@ export function NumbersPage() {
           </>
         }
       />
+      {system?.demo && (
+        <Callout tone="warn">
+          <strong>Demo mode:</strong> numbers here are simulated, so the QR code can't be scanned and no real WhatsApp messages are sent. To connect a real phone, run WA Reach with the OpenWA gateway using Docker (see the README, “Run for real”).
+        </Callout>
+      )}
       <ErrorNote error={error} />
       {data && !data.gateway.reachable && <Callout tone="danger">The OpenWA gateway is unreachable. Check OPENWA_URL and that the gateway container is running.</Callout>}
       <Callout tone="warn">
