@@ -3,14 +3,7 @@ import { post, put, useApi, errorMessage, type Settings, type SystemInfo } from 
 import { Badge, Button, Callout, Card, ErrorNote, Field, Loading, NumberInput, PageHeader, Toggle, useToast } from '../components/ui';
 import { SessionSelect } from '../components/pickers';
 import { useSession } from '../session';
-
-const TIMEZONES = (() => {
-  try {
-    return (Intl as unknown as { supportedValuesOf: (k: string) => string[] }).supportedValuesOf('timeZone');
-  } catch {
-    return ['Asia/Kolkata', 'UTC', 'Europe/London', 'America/New_York'];
-  }
-})();
+import { suggestedTimeZones, timeZoneOptions } from '../timezones';
 
 export function SettingsPage() {
   const { data, error, loading } = useApi<Settings>('/api/settings');
@@ -74,13 +67,22 @@ export function SettingsPage() {
           <Field label="Default WhatsApp number" hint="Used when a campaign, sequence or reply doesn't pick one.">
             <SessionSelect value={form.defaultSessionId} onChange={defaultSessionId => setForm({ ...form, defaultSessionId })} />
           </Field>
-          <Field label="Time zone" hint="Quiet hours, daily limits and charts use this.">
+          <Field label="Time zone" hint="Quiet hours, daily limits and charts use this. Offsets are for today; daylight saving is handled automatically.">
             <select className="select" value={form.timezone} onChange={e => setForm({ ...form, timezone: e.target.value })}>
-              {TIMEZONES.map(tz => (
-                <option key={tz} value={tz}>
-                  {tz}
-                </option>
-              ))}
+              <optgroup label="Suggested">
+                {suggestedTimeZones(form.timezone).map(tz => (
+                  <option key={`s-${tz.id}`} value={tz.id}>
+                    {tz.label}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="All time zones">
+                {timeZoneOptions().map(tz => (
+                  <option key={tz.id} value={tz.id}>
+                    {tz.label}
+                  </option>
+                ))}
+              </optgroup>
             </select>
           </Field>
           <Field label="Default country" hint="Two-letter code for numbers entered without a country code, e.g. IN, AE, GB.">
