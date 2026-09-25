@@ -111,6 +111,37 @@ export function Field({ label, hint, error, children, htmlFor }: { label?: React
   );
 }
 
+/**
+ * A number box you can clear and retype freely: the value is only clamped to [min, max] when you
+ * leave the field, so typing "1" over "6" gives 1 rather than jumping to "11" or back to the old value.
+ */
+export function NumberInput({ value, onChange, min, max, className = 'input' }: { value: number; onChange: (n: number) => void; min: number; max: number; className?: string }) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(current => (Number(current) === value && current !== '' ? current : String(value))), [value]);
+  const clamp = (n: number) => Math.min(max, Math.max(min, Math.round(n)));
+  return (
+    <input
+      className={className}
+      type="number"
+      inputMode="numeric"
+      min={min}
+      max={max}
+      value={draft}
+      onChange={e => {
+        setDraft(e.target.value);
+        const n = Number(e.target.value);
+        if (e.target.value !== '' && Number.isFinite(n) && n >= min && n <= max) onChange(Math.round(n));
+      }}
+      onBlur={() => {
+        const n = Number(draft);
+        const next = draft === '' || !Number.isFinite(n) ? value : clamp(n);
+        setDraft(String(next));
+        if (next !== value) onChange(next);
+      }}
+    />
+  );
+}
+
 export function Toggle({ checked, onChange, label, description, disabled }: {
   checked: boolean;
   onChange: (value: boolean) => void;

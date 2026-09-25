@@ -308,8 +308,14 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   // ---------------------------------------------------------------- inbox
 
   app.get('/inbox', async request => {
-    const query = z.object({ q: z.string().max(100).optional(), unread: z.enum(['true', 'false']).optional() }).parse(request.query);
-    return { items: s.messages.conversations({ q: query.q, unreadOnly: query.unread === 'true' }), unread: s.messages.unreadCount() };
+    const query = z
+      .object({ q: z.string().max(100).optional(), unread: z.enum(['true', 'false']).optional(), view: z.enum(['all', 'unread', 'replied']).optional() })
+      .parse(request.query);
+    const view = query.view ?? (query.unread === 'true' ? 'unread' : 'all');
+    return {
+      items: s.messages.conversations({ q: query.q, unreadOnly: view === 'unread', repliedOnly: view === 'replied' }),
+      unread: s.messages.unreadCount(),
+    };
   });
 
   app.get('/inbox/:id', async request => {

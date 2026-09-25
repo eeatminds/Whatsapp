@@ -1027,6 +1027,8 @@ table.table {
 }
 .bubble {
   max-width: 85%;
+  /* Room for the time and ticks, so a one-word message doesn't squeeze them. */
+  min-width: 84px;
   padding: 6px 9px 18px;
   border-radius: 8px;
   position: relative;
@@ -1056,6 +1058,7 @@ table.table {
   display: inline-flex;
   gap: 3px;
   align-items: center;
+  white-space: nowrap;
 }
 .bubble .media {
   display: block;

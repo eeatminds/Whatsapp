@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { post, put, useApi, errorMessage, type Settings, type SystemInfo } from '../api';
-import { Badge, Button, Callout, Card, ErrorNote, Field, Loading, PageHeader, Toggle, useToast } from '../components/ui';
+import { Badge, Button, Callout, Card, ErrorNote, Field, Loading, NumberInput, PageHeader, Toggle, useToast } from '../components/ui';
 import { SessionSelect } from '../components/pickers';
 
 const TIMEZONES = (() => {
@@ -10,10 +10,6 @@ const TIMEZONES = (() => {
     return ['Asia/Kolkata', 'UTC', 'Europe/London', 'America/New_York'];
   }
 })();
-
-function NumberInput({ value, onChange, min, max }: { value: number; onChange: (n: number) => void; min: number; max: number }) {
-  return <input className="input" type="number" min={min} max={max} value={value} onChange={e => onChange(Number(e.target.value))} />;
-}
 
 export function SettingsPage() {
   const { data, error, loading } = useApi<Settings>('/api/settings');

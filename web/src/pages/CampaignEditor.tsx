@@ -15,7 +15,7 @@ import {
   type SystemInfo,
   type Variant,
 } from '../api';
-import { Button, Callout, Card, ErrorNote, Field, Loading, PageHeader, Toggle, useToast } from '../components/ui';
+import { Button, Callout, Card, ErrorNote, Field, Loading, NumberInput, PageHeader, Toggle, useToast } from '../components/ui';
 import { IconArrowLeft, IconPlus, IconSend, IconX } from '../components/icons';
 import { Composer, MessagePreview } from '../components/composer';
 import { SessionSelect, TagPicker, useTags } from '../components/pickers';
@@ -418,14 +418,7 @@ export function CampaignEditorPage() {
                 label="Pace (messages per minute)"
                 hint={`Each number is capped at ${settings?.sending.sessionMaxPerMinute ?? '–'}/min and ${formatNumber(settings?.sending.dailyCapPerSession ?? 0)}/day. Slower is safer.`}
               >
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={60}
-                  value={options.perMinute}
-                  onChange={e => setOptions({ ...options, perMinute: Math.max(1, Math.min(60, Number(e.target.value) || 1)) })}
-                />
+                <NumberInput min={1} max={60} value={options.perMinute} onChange={perMinute => setOptions({ ...options, perMinute })} />
               </Field>
             </div>
             {preview && (

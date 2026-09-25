@@ -209,7 +209,7 @@ export class MessagesService {
 
   // ---------------------------------------------------------------- inbox
 
-  conversations(options: { q?: string; unreadOnly?: boolean; limit?: number }): Array<{
+  conversations(options: { q?: string; unreadOnly?: boolean; repliedOnly?: boolean; limit?: number }): Array<{
     contactId: number;
     name: string | null;
     phone: string;
@@ -242,7 +242,7 @@ export class MessagesService {
       `WITH latest AS (
          SELECT contact_id, MAX(id) AS id FROM messages
           WHERE contact_id IS NOT NULL
-            AND contact_id IN (SELECT DISTINCT contact_id FROM messages WHERE direction = 'in' AND contact_id IS NOT NULL)
+            ${options.unreadOnly || options.repliedOnly ? "AND contact_id IN (SELECT DISTINCT contact_id FROM messages WHERE direction = 'in' AND contact_id IS NOT NULL)" : ''}
           GROUP BY contact_id
        )
        SELECT m.contact_id, c.name, c.phone, c.consent, m.body, m.type, m.direction, m.created_at, m.session_id,

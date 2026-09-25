@@ -235,6 +235,14 @@ describe('inbox', () => {
     const after = await env.api('GET', '/api/inbox');
     expect(after.body.unread).toBe(0);
     expect(after.body.items[0].lastDirection).toBe('out');
+
+    // A chat you started (no reply yet) shows under All, not under Replied.
+    const created = await env.api('POST', '/api/contacts', { phone: '+919876555552', name: 'Asha' });
+    await env.api('POST', `/api/inbox/${created.body.contact?.id ?? created.body.id}/send`, { text: 'Hello Asha' });
+    const all = await env.api('GET', '/api/inbox?view=all');
+    expect(all.body.items[0]).toMatchObject({ phone: '919876555552', lastDirection: 'out', lastMessage: 'Hello Asha' });
+    const replied = await env.api('GET', '/api/inbox?view=replied');
+    expect(replied.body.items.map((c: { phone: string }) => c.phone)).not.toContain('919876555552');
   });
 });
 

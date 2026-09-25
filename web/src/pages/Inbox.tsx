@@ -156,15 +156,15 @@ function Thread({ contactId, onBack }: { contactId: number; onBack: () => void }
 export function InboxPage() {
   const { contactId } = useParams();
   const navigate = useNavigate();
-  const [filter, setFilter] = useState<'all' | 'unread'>('all');
+  const [filter, setFilter] = useState<'all' | 'unread' | 'replied'>('all');
   const [q, setQ] = useState('');
-  const query = new URLSearchParams({ ...(q ? { q } : {}), ...(filter === 'unread' ? { unread: 'true' } : {}) }).toString();
+  const query = new URLSearchParams({ ...(q ? { q } : {}), view: filter }).toString();
   const { data, loading } = useApi<{ items: Conversation[]; unread: number }>(`/api/inbox?${query}`, { poll: 8000 });
   const selected = contactId ? Number(contactId) : null;
 
   return (
     <div className="page" style={{ maxWidth: 1280 }}>
-      <PageHeader title="Inbox" description="Replies to your campaigns and new conversations, in one place." />
+      <PageHeader title="Inbox" description="Every chat with your contacts: messages you send and the replies you get." />
       <Card bodyClass="">
         <div className={`inbox ${selected ? 'has-thread' : ''}`}>
           <div className="inbox-list">
@@ -179,14 +179,19 @@ export function InboxPage() {
                 options={[
                   { value: 'all', label: 'All' },
                   { value: 'unread', label: `Unread${data?.unread ? ` (${data.unread})` : ''}` },
+                  { value: 'replied', label: 'Replied' },
                 ]}
               />
             </div>
             {loading && !data ? (
               <Loading />
             ) : data?.items.length === 0 ? (
-              <Empty title={filter === 'unread' ? 'All caught up' : 'No conversations yet'}>
-                {filter === 'unread' ? '' : 'When someone messages your WhatsApp number, the conversation appears here.'}
+              <Empty title={filter === 'unread' ? 'All caught up' : filter === 'replied' ? 'No replies yet' : 'No conversations yet'}>
+                {filter === 'unread'
+                  ? ''
+                  : filter === 'replied'
+                    ? 'Contacts who write back to you appear here.'
+                    : 'Messages you send and replies you receive appear here.'}
               </Empty>
             ) : (
               data?.items.map(c => (
@@ -213,7 +218,7 @@ export function InboxPage() {
             <Thread key={selected} contactId={selected} onBack={() => navigate('/inbox')} />
           ) : (
             <div className="thread" style={{ display: 'grid', placeItems: 'center' }}>
-              <Empty title="Select a conversation">Replies to campaigns land here, with the campaign that prompted them.</Empty>
+              <Empty title="Select a conversation">See what you sent, delivery and read ticks, and reply to your contacts.</Empty>
             </div>
           )}
         </div>
