@@ -1,0 +1,44 @@
+{
+  "name": "wa-reach",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WhatsApp marketing suite built on the OpenWA gateway: contacts, segments, campaigns, drip sequences, auto-replies, inbox and analytics.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "tsx watch --disable-warning=ExperimentalWarning server/index.ts",
+    "dev:web": "vite",
+    "demo": "vite build && tsx --disable-warning=ExperimentalWarning scripts/demo.ts",
+    "build": "npm run build:api && npm run build:web",
+    "build:api": "tsc -p tsconfig.json",
+    "build:web": "vite build",
+    "start": "node --disable-warning=ExperimentalWarning dist/server/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.tools.json",
+    "test": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest run",
+    "test:watch": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.4",
+    "fastify": "^5.12.5",
+    "libphonenumber-js": "^1.13.14",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.4",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.1"
+  }
+}

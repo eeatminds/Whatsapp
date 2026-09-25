@@ -1,0 +1,78 @@
+# WA Reach + the OpenWA gateway it sends through.
+#
+#   cp .env.example .env    # then fill in the secrets
+#   docker compose up -d --build
+#
+# WA Reach:   http://localhost:3000
+# OpenWA:     http://127.0.0.1:2785 (its own dashboard; bound to localhost only)
+name: wa-reach
+
+services:
+  openwa:
+    image: ${OPENWA_IMAGE:-docker.io/rmyndharis/openwa:0.23}
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      # Seeds OpenWA's admin key on first boot; WA Reach authenticates with the same value.
+      - API_MASTER_KEY=${OPENWA_API_KEY:?Set OPENWA_API_KEY in .env (at least 32 random characters)}
+      # whatsapp-web.js drives a real Chromium and is the lower ban-risk engine.
+      - ENGINE_TYPE=${OPENWA_ENGINE:-whatsapp-web.js}
+      - AUTO_START_SESSIONS=true
+      # OpenWA's own warm-up ramp and cold-outreach caps, on top of WA Reach's limits.
+      - SEND_PACING_ENABLED=${SEND_PACING_ENABLED:-true}
+      # Map WhatsApp privacy ids (@lid) to phone numbers so replies reach the right contact.
+      - RESOLVE_LID_TO_PHONE=true
+      # OpenWA refuses webhooks to private addresses unless the host is allow-listed.
+      - SSRF_ALLOWED_HOSTS=wa-reach
+      - CSP_UPGRADE_INSECURE_REQUESTS=false
+    volumes:
+      - openwa-data:/app/data
+    ports:
+      - '127.0.0.1:${OPENWA_PORT:-2785}:2785'
+    # Hardening mirrors OpenWA's own compose file.
+    security_opt:
+      - 'no-new-privileges:true'
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp
+    pids_limit: 2048
+    mem_limit: ${OPENWA_MEM_LIMIT:-2g}
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:2785/api/health/ready']
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  wa-reach:
+    build: .
+    image: wa-reach:latest
+    restart: unless-stopped
+    depends_on:
+      openwa:
+        condition: service_healthy
+    environment:
+      - OPENWA_URL=http://openwa:2785
+      - OPENWA_API_KEY=${OPENWA_API_KEY}
+      - WEBHOOK_URL=http://wa-reach:3000/webhooks/openwa
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      - PUBLIC_URL=${PUBLIC_URL:-}
+      - APP_API_KEY=${APP_API_KEY:-}
+      - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-Asia/Kolkata}
+      - DEFAULT_COUNTRY=${DEFAULT_COUNTRY:-IN}
+    volumes:
+      - wa-reach-data:/app/data
+    ports:
+      - '${WA_REACH_PORT:-3000}:3000'
+
+volumes:
+  openwa-data:
+  wa-reach-data:
