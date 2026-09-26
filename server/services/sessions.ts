@@ -1,6 +1,10 @@
 import type { Core } from '../context.js';
 import { OpenWAError, type OpenWASession, type SessionStatus } from '../openwa/client.js';
 import { badRequest, HttpError, notFound } from '../lib/errors.js';
+import type { OfficialInfo, OfficialNumbersService } from './official.js';
+
+/** A sending number: linked by QR code through OpenWA, or connected through Meta's official Cloud API. */
+export type NumberSession = OpenWASession & { channel: 'qr' | 'official'; official?: OfficialInfo };
 
 export const WEBHOOK_EVENTS = ['message.received', 'message.ack', 'message.failed', 'session.status'];
 
@@ -34,9 +38,9 @@ export interface SessionScope {
  * short-lived cache of which ones are ready to send, and makes sure each one has our webhook.
  */
 export class SessionsService {
-  private cache: OpenWASession[] = [];
+  private cache: NumberSession[] = [];
   private cachedAt = 0;
-  private refreshing: Promise<OpenWASession[]> | null = null;
+  private refreshing: Promise<NumberSession[]> | null = null;
   private status: GatewayStatus;
   private readonly webhookSynced = new Set<string>();
   private readonly webhookInFlight = new Map<string, Promise<'created' | 'updated'>>();
@@ -44,6 +48,7 @@ export class SessionsService {
   constructor(
     private readonly core: Core,
     private readonly scope?: SessionScope,
+    private readonly official?: OfficialNumbersService,
   ) {
     this.status = { reachable: false, lastError: null, checkedAt: null, webhookUrl: core.config.webhookUrl };
   }
@@ -52,14 +57,25 @@ export class SessionsService {
     return { ...this.status };
   }
 
-  async list(force = false): Promise<OpenWASession[]> {
-    if (!force && Date.now() - this.cachedAt < REFRESH_MS) return this.cache;
-    if (this.refreshing) return this.refreshing;
-    this.refreshing = (async () => {
+  /** QR-linked numbers (cached from the gateway) followed by official numbers (always current). */
+  async list(force = false): Promise<NumberSession[]> {
+    const withOfficial = (qr: NumberSession[]): NumberSession[] => [...qr, ...(this.official?.sessions() ?? [])];
+    if (!force && Date.now() - this.cachedAt < REFRESH_MS) return withOfficial(this.cache);
+    if (this.refreshing) return withOfficial(await this.refreshing);
+    return withOfficial(await this.refreshGateway(force));
+  }
+
+  isOfficial(sessionId: string): boolean {
+    return !!this.official?.isOfficial(sessionId);
+  }
+
+  private refreshGateway(force: boolean): Promise<NumberSession[]> {
+    const run = (async (): Promise<NumberSession[]> => {
       try {
         const all = this.scope ? await this.scope.fetchAll(force) : await this.core.openwa.listSessions();
         const sessions = Array.isArray(all) ? all : [];
-        this.cache = this.scope ? sessions.filter(s => this.scope!.owns(s.id)).map(s => this.displayed(s)) : sessions;
+        const owned = this.scope ? sessions.filter(s => this.scope!.owns(s.id)).map(s => this.displayed(s)) : sessions;
+        this.cache = owned.map(s => ({ ...s, channel: 'qr' as const }));
         this.cachedAt = Date.now();
         this.status = { ...this.status, reachable: true, lastError: null, checkedAt: new Date().toISOString() };
         // Sessions created in OpenWA's own dashboard get our webhook the first time we see them.
@@ -85,7 +101,8 @@ export class SessionsService {
         this.refreshing = null;
       }
     })();
-    return this.refreshing;
+    this.refreshing = run;
+    return run;
   }
 
   async readySessionIds(): Promise<string[]> {
@@ -109,7 +126,27 @@ export class SessionsService {
 
   /** Whether this business may use the session (always true without a scope). */
   owns(sessionId: string): boolean {
-    return !this.scope || this.scope.owns(sessionId);
+    return this.isOfficial(sessionId) || !this.scope || this.scope.owns(sessionId);
+  }
+
+  private notForOfficial(sessionId: string, what: string): void {
+    if (this.isOfficial(sessionId)) throw badRequest(`${what} is only for numbers linked by QR code; official numbers stay connected through Meta`);
+  }
+
+  private async assertCapacity(): Promise<void> {
+    if (!this.scope) return;
+    const limit = this.scope.maxNumbers();
+    const owned = (await this.list(true)).length;
+    if (limit !== null && owned >= limit) {
+      throw new HttpError(403, `Your plan allows ${limit} WhatsApp number${limit === 1 ? '' : 's'}. Remove one or ask to upgrade.`);
+    }
+  }
+
+  /** Connect a number through Meta's official Cloud API; counts toward the plan's number limit. */
+  async addOfficial(input: unknown) {
+    if (!this.official) throw badRequest('Official numbers are not available on this server');
+    await this.assertCapacity();
+    return this.official.add(input);
   }
 
   private guard(sessionId: string): void {
@@ -128,13 +165,7 @@ export class SessionsService {
     if (!new RegExp(`^[A-Za-z0-9-]{3,${maxLength}}$`).test(clean)) {
       throw badRequest(`Name must be 3-${maxLength} characters: letters, digits and hyphens`);
     }
-    if (this.scope) {
-      const limit = this.scope.maxNumbers();
-      const owned = (await this.list(true)).length;
-      if (limit !== null && owned >= limit) {
-        throw new HttpError(403, `Your plan allows ${limit} WhatsApp number${limit === 1 ? '' : 's'}. Remove one or ask to upgrade.`);
-      }
-    }
+    await this.assertCapacity();
     const created = await this.core.openwa.createSession(prefix + clean);
     this.scope?.add(created.id);
     const session = this.displayed(created);
@@ -150,6 +181,10 @@ export class SessionsService {
 
   async start(sessionId: string): Promise<void> {
     this.guard(sessionId);
+    if (this.isOfficial(sessionId)) {
+      await this.official!.check(sessionId);
+      return;
+    }
     await this.ensureWebhook(sessionId).catch(error => this.core.log.warn(`Webhook sync failed: ${String(error)}`));
     await this.core.openwa.startSession(sessionId);
     this.invalidate();
@@ -157,18 +192,24 @@ export class SessionsService {
 
   async stop(sessionId: string): Promise<void> {
     this.guard(sessionId);
+    this.notForOfficial(sessionId, 'Stopping');
     await this.core.openwa.stopSession(sessionId);
     this.invalidate();
   }
 
   async logout(sessionId: string): Promise<void> {
     this.guard(sessionId);
+    this.notForOfficial(sessionId, 'Logging out');
     await this.core.openwa.logoutSession(sessionId);
     this.invalidate();
   }
 
   async remove(sessionId: string): Promise<void> {
     this.guard(sessionId);
+    if (this.isOfficial(sessionId)) {
+      this.official!.remove(sessionId);
+      return;
+    }
     await this.core.openwa.deleteSession(sessionId);
     this.scope?.remove(sessionId);
     this.webhookSynced.delete(sessionId);
@@ -177,11 +218,13 @@ export class SessionsService {
 
   qr(sessionId: string) {
     this.guard(sessionId);
+    this.notForOfficial(sessionId, 'A QR code');
     return this.core.openwa.getQr(sessionId);
   }
 
   pairingCode(sessionId: string, phone: string) {
     this.guard(sessionId);
+    this.notForOfficial(sessionId, 'A pairing code');
     const digits = phone.replace(/\D/g, '');
     if (digits.length < 8) throw badRequest('Enter the full number with country code');
     return this.core.openwa.requestPairingCode(sessionId, digits);
@@ -229,7 +272,7 @@ export class SessionsService {
   }
 
   async syncWebhooks(): Promise<Array<{ sessionId: string; name: string; result: string }>> {
-    const sessions = await this.list(true);
+    const sessions = (await this.list(true)).filter(s => s.channel === 'qr');
     if (!this.status.reachable) throw new OpenWAError(0, this.status.lastError ?? 'OpenWA is unreachable');
     const results: Array<{ sessionId: string; name: string; result: string }> = [];
     for (const session of sessions) {

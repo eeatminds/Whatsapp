@@ -11,6 +11,7 @@ import type { Platform, TenantRuntime } from './platform/platform.js';
 import { toPublicUser } from './platform/platform.js';
 import { registerAccountRoutes, registerAdminRoutes, type AuthInfo } from './routes/admin.js';
 import { OpenWAError } from './openwa/client.js';
+import { MetaError } from './meta/client.js';
 import { parseCookies, serializeCookie, signSession, verifySession, verifyOpenWASignature } from './lib/crypto.js';
 import { isBotUserAgent } from './lib/links.js';
 import { registerApiRoutes } from './routes/api.js';
@@ -44,6 +45,13 @@ function errorResponse(error: unknown): { status: number; body: Record<string, u
     };
   }
   if (error instanceof HttpError) return { status: error.statusCode, body: { error: error.message, details: error.details } };
+  if (error instanceof MetaError) {
+    // Never pass Meta's 401/403 through: the browser would read it as our own sign-in expiring.
+    const kind = error.kind;
+    if (kind === 'network' || kind === 'unavailable') return { status: 502, body: { error: error.message } };
+    if (kind === 'rate_limited') return { status: 429, body: { error: error.message } };
+    return { status: 400, body: { error: error.message } };
+  }
   if (error instanceof OpenWAError) {
     if (error.kind === 'network') return { status: 502, body: { error: error.message, gateway: true } };
     if (error.kind === 'auth') {
@@ -133,7 +141,7 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
     if (config.cookieSecure || _request.protocol === 'https') reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     if (!reply.hasHeader('Content-Security-Policy')) reply.header(
       'Content-Security-Policy',
-      "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+      "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-src https://www.youtube-nocookie.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     );
     return payload;
   });
@@ -297,6 +305,51 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
     });
   });
 
+  // ---------------------------------------------------------------- Meta Cloud API webhooks, one URL per business
+
+  const metaRuntime = (tenantId: string): TenantRuntime | null => {
+    if (!/^[a-z0-9]{4,12}$/.test(tenantId)) return null;
+    try {
+      return platform.runtime(tenantId);
+    } catch {
+      return null;
+    }
+  };
+
+  await app.register(async scope => {
+    scope.addContentTypeParser('application/json', { parseAs: 'buffer', bodyLimit: 5 * 1024 * 1024 }, (_req, body, done) => {
+      done(null, body);
+    });
+    // Meta's subscription check when the business saves the callback URL in their Meta app.
+    scope.get('/webhooks/meta/:tenantId', async (request, reply) => {
+      const runtime = metaRuntime((request.params as { tenantId: string }).tenantId);
+      const query = request.query as Record<string, unknown>;
+      const challenge = query['hub.challenge'];
+      if (!runtime || typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(challenge)) return reply.status(403).send({ error: 'Forbidden' });
+      if (!runtime.services.official.acceptVerification(query['hub.mode'], query['hub.verify_token'])) return reply.status(403).send({ error: 'Forbidden' });
+      return reply.type('text/plain').send(challenge);
+    });
+    scope.post('/webhooks/meta/:tenantId', async (request, reply) => {
+      const runtime = metaRuntime((request.params as { tenantId: string }).tenantId);
+      if (!runtime) return reply.status(404).send({ error: 'Unknown business' });
+      const raw = request.body as Buffer;
+      const signature = request.headers['x-hub-signature-256'] as string | undefined;
+      // Signed with the app secret of one of this business's own Meta apps, or refused.
+      const secrets = runtime.services.official.appSecrets();
+      if (!Buffer.isBuffer(raw) || !secrets.some(secret => verifyOpenWASignature(raw, signature, secret))) {
+        return reply.status(401).send({ error: 'Invalid signature' });
+      }
+      let payload: unknown;
+      try {
+        payload = JSON.parse(raw.toString('utf8'));
+      } catch {
+        return reply.status(400).send({ error: 'Invalid JSON' });
+      }
+      const counts = await runtime.services.inbound.handleMeta(payload as Parameters<typeof runtime.services.inbound.handleMeta>[0]);
+      return { ok: true, ...counts };
+    });
+  });
+
   // ---------------------------------------------------------------- click tracking
 
   const redirect = async (request: FastifyRequest<{ Params: { tenantId: string; code: string; token?: string } }>, reply: FastifyReply) => {
@@ -334,7 +387,10 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
       scope.addHook('onRequest', async request => {
         if (!request.auth?.tenantId || !tenantContext.getStore()) throw new HttpError(401, 'Authentication required');
       });
-      await registerApiRoutes(scope, core, services);
+      await registerApiRoutes(scope, core, services, {
+        metaGuideVideoUrl: () => platform.settings().metaGuideVideoUrl || null,
+        supportContact: () => platform.settings().supportContact || null,
+      });
     },
     { prefix: '/api' },
   );

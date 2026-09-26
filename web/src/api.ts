@@ -194,6 +194,46 @@ export interface Session {
   restriction?: { active?: boolean; kind?: string; expiresAt?: string | null } | null;
   marketingSentToday?: number;
   hold?: { until: string; reason: string } | null;
+  /** 'official' = connected through Meta's WhatsApp Cloud API; 'qr' = linked by QR code. */
+  channel?: 'qr' | 'official';
+  official?: { phoneNumberId: string; wabaId: string; qualityRating: string | null; webhookSeenAt: string | null; checkedAt: string | null };
+  templates?: { approved: number; total: number };
+}
+
+export interface OfficialSetup {
+  webhookUrl: string | null;
+  verifyToken: string;
+  webhookVerifiedAt: string | null;
+  guideVideoUrl: string | null;
+  supportContact: string | null;
+}
+
+export interface TemplateSlot {
+  key: string;
+  label: string;
+  hint: string;
+}
+
+export interface MetaTemplate {
+  name: string;
+  language: string;
+  status: string;
+  category: string | null;
+  supported: boolean;
+  reason: string | null;
+  headerFormat: string;
+  headerText: string | null;
+  bodyText: string;
+  footerText: string | null;
+  buttons: Array<{ type: string; text: string; url?: string }>;
+  slots: TemplateSlot[];
+}
+
+export interface TemplateChoice {
+  name: string;
+  language: string;
+  params: Record<string, string>;
+  headerMediaId?: number | null;
 }
 
 export interface GatewayStatus {
@@ -208,6 +248,8 @@ export interface Variant {
   body: string;
   mediaId?: number | null;
   weight: number;
+  /** Meta-approved template, used when sending from an official number. */
+  template?: TemplateChoice | null;
 }
 
 export type Audience =
@@ -451,4 +493,5 @@ export interface PlatformSettings {
   graceDays: number;
   defaultDailyCap: number;
   defaultPerMinuteCap: number;
+  metaGuideVideoUrl: string;
 }

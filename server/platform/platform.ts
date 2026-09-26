@@ -7,6 +7,7 @@ import type { Core, Logger } from '../context.js';
 import { openDatabase, nowIso, parseJson, type Db } from '../db/database.js';
 import { badRequest, conflict, HttpError, notFound } from '../lib/errors.js';
 import type { OpenWAApi, OpenWASession } from '../openwa/client.js';
+import { MetaGraphClient, type MetaApi } from '../meta/client.js';
 import { createServices, type Services } from '../services/index.js';
 import type { SessionScope } from '../services/sessions.js';
 import { MARKETING_SOURCES } from '../services/messages.js';
@@ -93,6 +94,12 @@ export const platformSettingsSchema = z.object({
   /** Starting sending limits for a new business; the admin raises them per business over time. */
   defaultDailyCap: z.coerce.number().int().min(1).max(100_000),
   defaultPerMinuteCap: z.coerce.number().int().min(1).max(60),
+  /** Optional video (e.g. YouTube) shown to businesses next to the official-number setup guide. */
+  metaGuideVideoUrl: z
+    .string()
+    .trim()
+    .max(300)
+    .refine(v => v === '' || /^https:\/\/[^\s"'<>]+$/.test(v), 'Use a full https:// link'),
 });
 export type PlatformSettings = z.infer<typeof platformSettingsSchema>;
 
@@ -106,6 +113,7 @@ const DEFAULT_SETTINGS: PlatformSettings = {
   graceDays: 3,
   defaultDailyCap: 250,
   defaultPerMinuteCap: 10,
+  metaGuideVideoUrl: '',
 };
 
 /** Sending limits only the platform admin may change (per business). */
@@ -203,6 +211,8 @@ export interface TenantRuntime {
 export interface PlatformOptions {
   config: AppConfig;
   openwa: OpenWAApi;
+  /** Meta's Cloud API client; defaults to the real Graph API. */
+  meta?: MetaApi;
   clock?: () => Date;
   log: Logger;
   /** Platform database; defaults to DATA_DIR/platform.sqlite (':memory:' when the app DB is). */
@@ -217,6 +227,7 @@ export class Platform {
   readonly config: AppConfig;
   readonly clock: () => Date;
   private readonly openwa: OpenWAApi;
+  private readonly meta: MetaApi;
   private readonly log: Logger;
   private readonly random?: () => number;
   private readonly starterKit: boolean;
@@ -228,6 +239,7 @@ export class Platform {
   constructor(options: PlatformOptions) {
     this.config = options.config;
     this.openwa = options.openwa;
+    this.meta = options.meta ?? new MetaGraphClient();
     this.clock = options.clock ?? (() => new Date());
     this.log = options.log;
     this.random = options.random;
@@ -589,10 +601,11 @@ export class Platform {
       dbPath: inMemory ? ':memory:' : join(dir, 'wa-reach.sqlite'),
       mediaDir,
       webhookUrl: `${this.config.webhookUrl}/${tenant}`,
+      metaWebhookUrl: this.config.metaWebhookUrl ? `${this.config.metaWebhookUrl}/${tenant}` : null,
       publicUrl: this.config.publicUrl ? `${this.config.publicUrl}/t/${tenant}` : null,
       apiKey: null,
     };
-    const core: Core = { db: openDatabase(config.dbPath), config, openwa: this.openwa, clock: this.clock, log: this.log };
+    const core: Core = { db: openDatabase(config.dbPath), config, openwa: this.openwa, meta: this.meta, clock: this.clock, log: this.log };
     const owned = this.ownedSessions({ core });
     const scope: SessionScope = {
       fetchAll: force => this.fetchAllSessions(force),
@@ -670,7 +683,7 @@ export class Platform {
     monthStart.setUTCHours(0, 0, 0, 0);
     const db = runtime.core.db;
     return {
-      numbers: this.ownedSessions(runtime).size,
+      numbers: this.ownedSessions(runtime).size + runtime.services.official.count(),
       contacts: db.get<{ n: number }>('SELECT COUNT(*) AS n FROM contacts')?.n ?? 0,
       sentThisMonth:
         db.get<{ n: number }>(

@@ -4,6 +4,13 @@ import { Badge, Button, Callout, Card, Empty, ErrorNote, Field, Loading, Modal, 
 import { IconPlus, IconRefresh } from '../components/icons';
 import { useSessions } from '../components/pickers';
 import { formatNumber, relativeTime } from '../format';
+import { OfficialConnectModal, OfficialTemplatesModal } from '../components/official';
+
+const QUALITY: Record<string, { label: string; tone: 'green' | 'amber' | 'red' }> = {
+  GREEN: { label: 'High', tone: 'green' },
+  YELLOW: { label: 'Medium', tone: 'amber' },
+  RED: { label: 'Low', tone: 'red' },
+};
 
 const STATUS: Record<Session['status'], { label: string; tone?: 'green' | 'blue' | 'amber' | 'red' }> = {
   ready: { label: 'Connected', tone: 'green' },
@@ -150,6 +157,9 @@ export function NumbersPage() {
   const { data, error, loading, reload } = useSessions({ poll: 8000 });
   const { data: system } = useApi<SystemInfo>('/api/system');
   const [adding, setAdding] = useState(false);
+  const [addKind, setAddKind] = useState<'qr' | 'official'>('qr');
+  const [connecting, setConnecting] = useState<{ existing: Session | null } | null>(null);
+  const [templatesFor, setTemplatesFor] = useState<Session | null>(null);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const [linking, setLinking] = useState<Session | null>(null);
@@ -169,6 +179,7 @@ export function NumbersPage() {
   };
 
   const sessions = data?.items ?? [];
+  const hasQr = sessions.some(s => s.channel !== 'official');
 
   return (
     <div className="page">
@@ -192,23 +203,106 @@ export function NumbersPage() {
         </Callout>
       )}
       <ErrorNote error={error} />
-      {data && !data.gateway.reachable && <Callout tone="danger">The WhatsApp gateway is unreachable right now, so numbers can't connect or send. Try again in a few minutes.</Callout>}
-      <Callout tone="warn">
-        Numbers are linked the way WhatsApp Web does, not through Meta's official Cloud API, so a number can be restricted if WhatsApp sees spam.
-        Use a dedicated number, warm it up for a few days before bulk sending, and message only people who expect to hear from you.
-      </Callout>
+      {data && !data.gateway.reachable && (hasQr || sessions.length === 0) && <Callout tone="danger">The WhatsApp gateway is unreachable right now, so numbers can't connect or send. Try again in a few minutes.</Callout>}
+      {hasQr && (
+        <Callout tone="warn">
+          QR-linked numbers work the way WhatsApp Web does, not through Meta's official Cloud API, so a number can be restricted if WhatsApp sees spam. Use a dedicated number, warm it up for a few days before
+          bulk sending, and message only people who expect to hear from you. For the safest high-volume sending, connect an <strong>official WhatsApp Business API</strong> number instead.
+        </Callout>
+      )}
 
       {loading && !data ? (
         <Loading />
       ) : sessions.length === 0 ? (
         <Card>
           <Empty title="No numbers yet" action={<Button variant="primary" onClick={() => setAdding(true)}>Add your first number</Button>}>
-            Add a number, then scan the QR code with WhatsApp on that phone.
+            Link a phone by scanning a QR code, or connect an official WhatsApp Business API number from your own Meta account.
           </Empty>
         </Card>
       ) : (
         <div className="grid cols-2">
           {sessions.map(s => {
+            if (s.channel === 'official') {
+              const isDefault = data?.defaultSessionId === s.id;
+              const used = s.marketingSentToday ?? 0;
+              const cap = data?.dailyCap ?? 0;
+              const quality = s.official?.qualityRating ? QUALITY[s.official.qualityRating.toUpperCase()] : undefined;
+              return (
+                <Card
+                  key={s.id}
+                  title={
+                    <span className="row">
+                      {s.name}
+                      <Badge tone="green">Official API</Badge>
+                      {isDefault && <Badge tone="blue">Default</Badge>}
+                    </span>
+                  }
+                  subtitle={`${s.phone ? `+${s.phone}` : 'Number pending'}${s.pushName ? ` · ${s.pushName}` : ''}`}
+                  actions={
+                    <Badge tone={s.status === 'ready' ? 'green' : 'red'} dot>
+                      {s.status === 'ready' ? 'Connected' : 'Needs attention'}
+                    </Badge>
+                  }
+                  footer={
+                    <div className="row wrap">
+                      <Button size="sm" onClick={() => setTemplatesFor(s)}>
+                        Templates
+                      </Button>
+                      <Button size="sm" loading={busy === `${s.id}:check`} onClick={() => act(s.id, 'check', () => post(`/api/official/numbers/${s.id}/check`))}>
+                        Check connection
+                      </Button>
+                      <Button size="sm" onClick={() => setConnecting({ existing: s })}>
+                        Update token
+                      </Button>
+                      {!isDefault && (
+                        <Button size="sm" onClick={() => act(s.id, 'default', () => put<Settings>('/api/settings', { defaultSessionId: s.id }))}>
+                          Make default
+                        </Button>
+                      )}
+                      <span className="spacer" />
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        onClick={async () => {
+                          const ok = await confirm('Disconnect this official number?', 'Its saved Meta token is deleted here. Your number and templates stay in your Meta account.', {
+                            confirmLabel: 'Disconnect',
+                            danger: true,
+                          });
+                          if (ok) await act(s.id, 'delete', () => del(`/api/sessions/${s.id}`));
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  }
+                >
+                  <div className="stack tight">
+                    <div className="row between small">
+                      <span className="secondary">Marketing messages today</span>
+                      <span className="num">
+                        {formatNumber(used)} / {formatNumber(cap)}
+                      </span>
+                    </div>
+                    <div className="progress" aria-hidden="true">
+                      <div style={{ width: `${cap ? Math.min(100, (used / cap) * 100) : 0}%` }} />
+                    </div>
+                    <dl className="kv small">
+                      <dt>Approved templates</dt>
+                      <dd>
+                        {s.templates?.approved ?? 0}
+                        {s.templates && s.templates.total > s.templates.approved ? ` (${s.templates.total - s.templates.approved} waiting or rejected)` : ''}
+                      </dd>
+                      <dt>Quality (Meta)</dt>
+                      <dd>{quality ? <Badge tone={quality.tone}>{quality.label}</Badge> : 'Not rated yet'}</dd>
+                      <dt>Replies &amp; receipts</dt>
+                      <dd>{s.official?.webhookSeenAt ? `Receiving (last ${relativeTime(s.official.webhookSeenAt)})` : 'Nothing received yet: check the webhook (step 5)'}</dd>
+                    </dl>
+                    {s.hold && <Callout tone="warn">Paused until {new Date(s.hold.until).toLocaleTimeString()}: {s.hold.reason}</Callout>}
+                    {s.lastError && <p className="small error-text">{s.lastError}</p>}
+                  </div>
+                </Card>
+              );
+            }
             const status = STATUS[s.status] ?? { label: s.status };
             const isDefault = data?.defaultSessionId === s.id;
             const used = s.marketingSentToday ?? 0;
@@ -304,9 +398,11 @@ export function NumbersPage() {
               <Button
                 variant="primary"
                 loading={busy === 'new:create'}
-                disabled={!/^[A-Za-z0-9-]{3,50}$/.test(name)}
+                disabled={addKind === 'qr' && !/^[A-Za-z0-9-]{3,50}$/.test(name)}
                 onClick={() =>
-                  act('new', 'create', async () => {
+                  addKind === 'official'
+                    ? (setAdding(false), setConnecting({ existing: null }))
+                    : act('new', 'create', async () => {
                     const session = await post<Session>('/api/sessions', { name });
                     setAdding(false);
                     setName('');
@@ -314,16 +410,50 @@ export function NumbersPage() {
                   })
                 }
               >
-                Create and link
+                {addKind === 'official' ? 'Continue' : 'Create and link'}
               </Button>
             </>
           }
         >
-          <Field label="Name" hint="Letters, digits and hyphens, e.g. sales-line or store-bengaluru.">
-            <input className="input" value={name} onChange={e => setName(e.target.value.replace(/\s+/g, '-'))} placeholder="sales-line" />
-          </Field>
+          <div className="stack">
+            <label className={`option-card ${addKind === 'qr' ? 'selected' : ''}`}>
+              <input type="radio" name="add-kind" checked={addKind === 'qr'} onChange={() => setAddKind('qr')} />
+              <span>
+                <strong>Scan a QR code</strong>
+                <br />
+                <span className="small secondary">Quickest: link a WhatsApp phone in a minute, like WhatsApp Web. Send any message, no templates. Unofficial, so keep volumes modest.</span>
+              </span>
+            </label>
+            <label className={`option-card ${addKind === 'official' ? 'selected' : ''}`}>
+              <input type="radio" name="add-kind" checked={addKind === 'official'} onChange={() => setAddKind('official')} />
+              <span>
+                <strong>Official WhatsApp Business API (Meta)</strong>
+                <br />
+                <span className="small secondary">
+                  Connect your own Meta app. No ban risk from an unofficial link, Meta-approved templates, delivery reports from Meta. Meta bills you per template message. Step-by-step guide included.
+                </span>
+              </span>
+            </label>
+            {addKind === 'qr' && (
+              <Field label="Name" hint="Letters, digits and hyphens, e.g. sales-line or store-bengaluru.">
+                <input className="input" value={name} onChange={e => setName(e.target.value.replace(/\s+/g, '-'))} placeholder="sales-line" />
+              </Field>
+            )}
+          </div>
         </Modal>
       )}
+      {connecting && (
+        <OfficialConnectModal
+          existing={connecting.existing}
+          onClose={() => setConnecting(null)}
+          onDone={session => {
+            setConnecting(null);
+            toast.success(connecting.existing ? 'Saved' : `${session.name} connected`);
+            void reload();
+          }}
+        />
+      )}
+      {templatesFor && <OfficialTemplatesModal session={templatesFor} onClose={() => { setTemplatesFor(null); void reload(); }} />}
       {linking && (
         <LinkModal
           session={linking}

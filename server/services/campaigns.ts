@@ -15,6 +15,7 @@ import { toContact } from './contacts.js';
 import type { MediaService } from './media.js';
 import type { Sender } from './sender.js';
 import type { MessagesService } from './messages.js';
+import { templateChoiceSchema, type OfficialNumbersService } from './official.js';
 
 const id = z.coerce.number().int().positive();
 const ids = z.array(id).max(100_000);
@@ -25,8 +26,10 @@ export const variantSchema = z
     body: z.string().max(4000).default(''),
     mediaId: id.nullish(),
     weight: z.coerce.number().int().min(0).max(100).default(100),
+    /** A Meta-approved template, used instead of body/media when sending from an official number. */
+    template: templateChoiceSchema.nullish(),
   })
-  .refine(v => v.body.trim() !== '' || !!v.mediaId, 'Each variant needs text, media, or both');
+  .refine(v => v.body.trim() !== '' || !!v.mediaId || !!v.template, 'Each variant needs text, media, or a template');
 
 export const audienceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('all'), excludeTagIds: ids.default([]) }),
@@ -180,6 +183,7 @@ export class CampaignsService {
     private readonly media: MediaService,
     private readonly sender: Sender,
     private readonly messages: MessagesService,
+    private readonly official?: OfficialNumbersService,
   ) {}
 
   private now(): string {
@@ -249,6 +253,9 @@ export class CampaignsService {
     if (totalWeight !== 100) throw badRequest(`Variant split must add up to 100% (currently ${totalWeight}%)`);
     for (const variant of data.variants) {
       if (variant.mediaId && !this.media.exists(variant.mediaId)) throw badRequest(`Variant ${variant.key}: media file no longer exists`);
+      if (variant.template?.headerMediaId && !this.media.exists(variant.template.headerMediaId)) {
+        throw badRequest(`Variant ${variant.key}: the template's header file no longer exists`);
+      }
     }
     if (data.audience.type === 'segment') this.segments.get(data.audience.segmentId);
     const options: CampaignOptions = { ...this.defaultOptions(), ...data.options };
@@ -413,6 +420,7 @@ export class CampaignsService {
     }
     const sessionId = campaign.sessionId ?? this.settings.get().defaultSessionId;
     if (!sessionId) throw badRequest('Choose which WhatsApp number sends this campaign');
+    this.assertSendable(campaign, sessionId);
     const preview = this.audiencePreview({ audience: campaign.audience, options: campaign.options });
     if (preview.eligible === 0) throw badRequest('No eligible recipients: the audience is empty after removing opted-out and invalid numbers');
     if (campaign.options.trackLinks && !this.core.config.publicUrl) {
@@ -486,6 +494,9 @@ export class CampaignsService {
   resume(campaignId: number): Campaign {
     const row = this.row(campaignId);
     if (row.status !== 'paused') throw conflict('Only paused campaigns can be resumed');
+    const paused = this.toCampaign(row, { ...EMPTY_STATS });
+    const sessionId = paused.sessionId ?? this.settings.get().defaultSessionId;
+    if (sessionId) this.assertSendable(paused, sessionId);
     if (!row.started_at) {
       // Paused while still scheduled: recipients were never created.
       this.start(campaignId);
@@ -672,6 +683,33 @@ export class CampaignsService {
     return text;
   }
 
+  /**
+   * Official numbers may only start conversations with approved templates; QR-linked numbers send
+   * the written message. Checked at launch and resume so problems show up before anything sends.
+   */
+  assertSendable(campaign: Pick<Campaign, 'variants'>, sessionId: string): void {
+    const label = (v: Variant) => (campaign.variants.length > 1 ? `version ${v.key}` : 'the message');
+    if (this.official?.isOfficial(sessionId)) {
+      for (const variant of campaign.variants) {
+        if (!variant.template) {
+          throw badRequest(`Official WhatsApp numbers can only start conversations with a Meta-approved template. Choose a template for ${label(variant)}.`);
+        }
+        const problem = this.official.choiceProblem(sessionId, variant.template);
+        if (problem) throw badRequest(problem);
+      }
+      return;
+    }
+    const empty = campaign.variants.find(v => !v.body.trim() && !v.mediaId);
+    if (empty) throw badRequest(`Write ${label(empty)}: Meta templates only work with official numbers`);
+  }
+
+  /** Personalized values for a template's variables, e.g. "{{first_name|there}}" → "Asha". */
+  templateValues(variant: Variant, contact: ContactRow): (key: string) => string {
+    const vars = contactVariables(toContact(contact), { business_name: this.settings.get().businessName });
+    const params = variant.template?.params ?? {};
+    return key => renderTemplate(params[key] ?? '', vars).text;
+  }
+
   variantFor(campaign: Campaign, key: string): Variant {
     return campaign.variants.find(v => v.key === key) ?? campaign.variants[0];
   }
@@ -695,16 +733,27 @@ export class CampaignsService {
         wa_chat_id: null,
       } as unknown as ContactRow);
     const variant = this.variantFor(campaign, data.variant);
-    const text = this.render(campaign, variant, contact, null);
     const chatId = contact.wa_chat_id ?? chatIdFor(normalized.phone);
-    const sent = await this.sender.send(sessionId, chatId, { text, mediaId: variant.mediaId });
+    let text: string;
+    let mediaId = variant.mediaId ?? null;
+    let sent;
+    if (this.sender.isOfficial(sessionId)) {
+      this.assertSendable({ variants: [variant] }, sessionId);
+      sent = await this.sender.sendTemplate(sessionId, chatId, variant.template!, this.templateValues(variant, contact));
+      text = sent.text;
+      mediaId = variant.template!.headerMediaId ?? null;
+    } else {
+      if (!variant.body.trim() && !variant.mediaId) throw badRequest('Write a message first: Meta templates only work with official numbers');
+      text = this.render(campaign, variant, contact, null);
+      sent = await this.sender.send(sessionId, chatId, { text, mediaId: variant.mediaId });
+    }
     this.messages.recordOutbound({
       contactId: contact.id || null,
       sessionId,
       chatId,
       waMessageId: sent.messageId,
       body: text,
-      mediaId: variant.mediaId,
+      mediaId,
       type: sent.type,
       sourceType: 'test',
       sourceId: campaignId,

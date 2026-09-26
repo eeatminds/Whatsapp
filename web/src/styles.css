@@ -1402,3 +1402,86 @@ table.table {
   width: 100%;
   max-width: 380px;
 }
+
+/* ---------------------------------------------------------------- official numbers (Meta Cloud API) */
+
+.modal.wide:has(.official-setup) {
+  max-width: 1080px;
+}
+.official-setup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 24px;
+  align-items: start;
+}
+.official-guide {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+@media (max-width: 860px) {
+  .official-setup {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .official-guide {
+    max-height: none;
+  }
+}
+.guide {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.guide-step {
+  display: flex;
+  gap: 10px;
+}
+.guide-step .n {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand-text);
+  font-weight: 650;
+  font-size: 13px;
+  display: grid;
+  place-items: center;
+}
+.guide-step code,
+.official-guide code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--surface-sunken);
+  padding: 1px 4px;
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+.video-frame {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: #000;
+}
+.video-frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+.template-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+.success-text {
+  color: var(--brand-text);
+}

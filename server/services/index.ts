@@ -16,6 +16,7 @@ import { AutoRepliesService } from './auto-replies.js';
 import { InboundService } from './inbound.js';
 import { Dispatcher } from './dispatcher.js';
 import { AnalyticsService } from './analytics.js';
+import { OfficialNumbersService } from './official.js';
 
 export function createServices(core: Core, options: { random?: () => number; scope?: SessionScope } = {}) {
   const bus = new Bus();
@@ -27,13 +28,14 @@ export function createServices(core: Core, options: { random?: () => number; sco
   const templates = new TemplatesService(core, media, contacts, settings);
   const messages = new MessagesService(core);
   const scope = options.scope;
-  const sender = new Sender(core, media, scope ? id => scope.owns(id) : undefined);
-  const sessions = new SessionsService(core, scope);
-  const campaigns = new CampaignsService(core, settings, segments, media, sender, messages);
+  const official = new OfficialNumbersService(core, media);
+  const sender = new Sender(core, media, scope ? id => scope.owns(id) : undefined, official);
+  const sessions = new SessionsService(core, scope, official);
+  const campaigns = new CampaignsService(core, settings, segments, media, sender, messages, official);
   const sequences = new SequencesService(core, settings, media, tags, bus);
   const outbox = new OutboxService(core);
   const autoReplies = new AutoRepliesService(core, settings, media, tags, contacts, sequences, outbox);
-  const inbound = new InboundService(core, settings, contacts, messages, campaigns, autoReplies, outbox, sessions, bus);
+  const inbound = new InboundService(core, settings, contacts, messages, campaigns, autoReplies, outbox, sessions, bus, official);
   const dispatcher = new Dispatcher(
     core,
     { settings, sessions, campaigns, sequences, messages, outbox, contacts, sender, inbound, autoReplies },
@@ -51,6 +53,7 @@ export function createServices(core: Core, options: { random?: () => number; sco
     messages,
     sender,
     sessions,
+    official,
     campaigns,
     sequences,
     outbox,

@@ -250,4 +250,49 @@ export const MIGRATIONS: string[] = [
     created_at TEXT NOT NULL
   );
   `,
+  `
+  -- Numbers connected through Meta's official WhatsApp Cloud API. The id doubles as the session id
+  -- used everywhere else (campaigns, messages, outbox). Credentials are encrypted (lib/secret-box).
+  CREATE TABLE official_numbers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    phone_number_id TEXT NOT NULL UNIQUE,
+    waba_id TEXT NOT NULL,
+    display_phone TEXT,
+    verified_name TEXT,
+    quality_rating TEXT,
+    access_token TEXT NOT NULL,
+    app_secret TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('ready', 'failed')),
+    last_error TEXT,
+    webhook_seen_at TEXT,
+    checked_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  -- Approved (and pending/rejected) templates, synced from Meta per WhatsApp Business Account.
+  CREATE TABLE official_templates (
+    id INTEGER PRIMARY KEY,
+    waba_id TEXT NOT NULL,
+    meta_id TEXT,
+    name TEXT NOT NULL,
+    language TEXT NOT NULL,
+    status TEXT NOT NULL,
+    category TEXT,
+    components TEXT NOT NULL DEFAULT '[]',
+    synced_at TEXT NOT NULL,
+    UNIQUE (waba_id, name, language)
+  );
+
+  -- Media uploaded to Meta is reusable for 30 days; remember the id instead of re-uploading per message.
+  CREATE TABLE official_media (
+    number_id TEXT NOT NULL REFERENCES official_numbers (id) ON DELETE CASCADE,
+    media_id INTEGER NOT NULL REFERENCES media (id) ON DELETE CASCADE,
+    meta_media_id TEXT NOT NULL,
+    uploaded_at TEXT NOT NULL,
+    PRIMARY KEY (number_id, media_id)
+  );
+  CREATE INDEX messages_window ON messages (session_id, chat_id, direction, created_at);
+  `,
 ];

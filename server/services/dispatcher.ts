@@ -10,7 +10,8 @@ import type { SequencesService, EnrollmentRow } from './sequences.js';
 import type { MessagesService } from './messages.js';
 import type { OutboxService, OutboxRow } from './outbox.js';
 import type { ContactsService, ContactRow } from './contacts.js';
-import type { Sender } from './sender.js';
+import type { Sender, SentMessage } from './sender.js';
+import { MetaError } from '../meta/client.js';
 import type { InboundService } from './inbound.js';
 import type { AutoRepliesService } from './auto-replies.js';
 
@@ -37,6 +38,8 @@ const MAX_SKIPS_PER_TICK = 50;
 const BACKOFF_START_MS = 30_000;
 const BACKOFF_MAX_MS = 10 * 60_000;
 const MAINTENANCE_EVERY_MS = 10 * 60_000;
+/** Meta errors that mean the template itself can't be sent, so every recipient would fail the same way. */
+const TEMPLATE_PROBLEMS = new Set([132000, 132001, 132007, 132012, 132015, 132016, 131063]);
 
 function asOpenWAError(error: unknown): OpenWAError {
   if (error instanceof OpenWAError) return error;
@@ -153,7 +156,13 @@ export class Dispatcher {
     const reachable = this.deps.sessions.gatewayStatus().reachable;
     for (const sessionId of this.deps.campaigns.runningSessionIds()) {
       if (!ready.includes(sessionId)) {
-        const reason = reachable ? 'The WhatsApp number is not connected' : 'The OpenWA gateway is unreachable';
+        const number = sessions.find(s => s.id === sessionId);
+        const reason =
+          number?.channel === 'official'
+            ? `The official WhatsApp number needs attention${number.lastError ? `: ${number.lastError}` : ''}`
+            : reachable
+              ? 'The WhatsApp number is not connected'
+              : 'The OpenWA gateway is unreachable';
         for (const campaign of this.deps.campaigns.runningForSession(sessionId)) this.waiting.set(campaign.id, reason);
       }
     }
@@ -291,7 +300,8 @@ export class Dispatcher {
       if (this.deps.messages.receivedMarketingSince(contact.id, since, campaign.id)) return { skip: 'frequency_cap' };
     }
     let chatId = contact.wa_chat_id ?? chatIdFor(contact.phone);
-    if (campaign.options.validateNumbers && contact.wa_status === 'unknown') {
+    // Meta has no number lookup; the official API reports undeliverable numbers after sending.
+    if (campaign.options.validateNumbers && contact.wa_status === 'unknown' && !this.deps.sender.isOfficial(sessionId)) {
       try {
         const result = await this.core.openwa.checkNumber(sessionId, contact.phone);
         this.deps.contacts.recordValidation(contact.id, result.exists, result.whatsappId);
@@ -314,15 +324,31 @@ export class Dispatcher {
     settings: Settings,
   ): Promise<SendOutcome> {
     const variant = this.deps.campaigns.variantFor(campaign, recipient.variant);
-    let text: string;
-    try {
-      text = this.deps.campaigns.render(campaign, variant, contact, recipient.token);
-    } catch (error) {
-      this.deps.campaigns.markFailed(recipient.id, `Could not render message: ${String(error)}`);
-      return 'failed';
+    let text = '';
+    let mediaId = variant.mediaId ?? null;
+    let send: () => Promise<SentMessage & { text?: string }>;
+    if (this.deps.sender.isOfficial(sessionId)) {
+      const choice = variant.template;
+      if (!choice) {
+        this.deps.campaigns.requeue(recipient.id, 'Waiting for a Meta-approved template', false);
+        this.deps.campaigns.pause(campaign.id, 'Official WhatsApp numbers can only send Meta-approved templates. Edit the campaign, choose a template, then resume.');
+        return 'skipped';
+      }
+      mediaId = choice.headerMediaId ?? null;
+      const values = this.deps.campaigns.templateValues(variant, contact);
+      send = () => this.deps.sender.sendTemplate(sessionId, chatId, choice, values);
+    } else {
+      try {
+        text = this.deps.campaigns.render(campaign, variant, contact, recipient.token);
+      } catch (error) {
+        this.deps.campaigns.markFailed(recipient.id, `Could not render message: ${String(error)}`);
+        return 'failed';
+      }
+      send = () => this.deps.sender.send(sessionId, chatId, { text, mediaId: variant.mediaId });
     }
     try {
-      const sent = await this.deps.sender.send(sessionId, chatId, { text, mediaId: variant.mediaId });
+      const sent = await send();
+      if (sent.text) text = sent.text;
       this.core.db.tx(() => {
         this.deps.campaigns.markSent(recipient.id, sent.messageId);
         this.deps.messages.recordOutbound({
@@ -331,7 +357,7 @@ export class Dispatcher {
           chatId,
           waMessageId: sent.messageId,
           body: sent.followUp ? null : text,
-          mediaId: variant.mediaId,
+          mediaId,
           type: sent.type,
           sourceType: 'campaign',
           sourceId: campaign.id,
@@ -355,6 +381,12 @@ export class Dispatcher {
       return 'sent';
     } catch (raw) {
       const error = asOpenWAError(raw);
+      if (error instanceof MetaError && error.kind === 'rejected' && error.metaCode !== undefined && TEMPLATE_PROBLEMS.has(error.metaCode)) {
+        // Fix the template once, not a failure per recipient: keep this one queued and pause.
+        this.deps.campaigns.requeue(recipient.id, error.message, false);
+        this.deps.campaigns.pause(campaign.id, `Paused: ${error.message}`);
+        return 'skipped';
+      }
       if (error.kind === 'rejected') {
         this.deps.campaigns.markFailed(recipient.id, error.message);
         const failures = (this.consecutiveFailures.get(campaign.id) ?? 0) + 1;
@@ -389,7 +421,7 @@ export class Dispatcher {
     if (error.kind === 'rate_limited') {
       actions.requeue(false);
       const retryMs = Math.min(Math.max((error.retryAfterSeconds ?? 60) * 1000, 60_000), 60 * 60_000);
-      this.hold(sessionId, retryMs, `OpenWA send pacing limit reached (${error.message.replace(/^OpenWA 429: /, '')})`);
+      this.hold(sessionId, retryMs, error instanceof MetaError ? `Meta rate limit: ${error.message}` : `OpenWA send pacing limit reached (${error.message.replace(/^OpenWA 429: /, '')})`);
       return;
     }
     if (attempts >= MAX_SEND_ATTEMPTS) actions.giveUp();
@@ -397,7 +429,9 @@ export class Dispatcher {
     const previous = this.backoff.get(sessionId)?.delayMs ?? 0;
     const delay = previous ? Math.min(previous * 2, BACKOFF_MAX_MS) : BACKOFF_START_MS;
     const reason =
-      error.kind === 'auth'
+      error instanceof MetaError
+        ? `Meta: ${error.message}`
+        : error.kind === 'auth'
         ? 'OpenWA rejected the API key (check OPENWA_API_KEY)'
         : error.kind === 'network'
           ? 'The OpenWA gateway is unreachable'
@@ -534,7 +568,9 @@ export class Dispatcher {
   // ---------------------------------------------------------------- number validation (idle work)
 
   private async maybeValidate(sessionId: string, ready: string[], settings: Settings): Promise<void> {
-    const validator = settings.defaultSessionId && ready.includes(settings.defaultSessionId) ? settings.defaultSessionId : ready[0];
+    // Number lookups need a QR-linked number; Meta's API has none.
+    const linked = ready.filter(id => !this.deps.sender.isOfficial(id));
+    const validator = settings.defaultSessionId && linked.includes(settings.defaultSessionId) ? settings.defaultSessionId : linked[0];
     if (sessionId !== validator || this.nowMs() < this.validationNextAt) return;
     const next = this.core.db.get<{ id: number; phone: string }>(
       'SELECT id, phone FROM contacts WHERE wa_check_requested_at IS NOT NULL ORDER BY wa_check_requested_at, id LIMIT 1',

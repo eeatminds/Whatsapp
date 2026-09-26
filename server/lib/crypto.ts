@@ -20,7 +20,10 @@ export function safeEqual(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-/** Verify OpenWA's `X-OpenWA-Signature: sha256=<hex>` over the exact raw request body. */
+/**
+ * Verify a `sha256=<hex>` HMAC over the exact raw request body: OpenWA's X-OpenWA-Signature, and
+ * Meta's X-Hub-Signature-256 (keyed with the Meta app secret).
+ */
 export function verifyOpenWASignature(rawBody: Buffer, header: string | undefined, secret: string): boolean {
   if (typeof header !== 'string' || !secret) return false;
   const expected = 'sha256=' + createHmac('sha256', secret).update(rawBody).digest('hex');

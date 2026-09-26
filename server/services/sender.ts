@@ -2,6 +2,7 @@ import type { Core } from '../context.js';
 import { OpenWAError } from '../openwa/client.js';
 import { HttpError } from '../lib/errors.js';
 import type { MediaService } from './media.js';
+import type { OfficialNumbersService, TemplateChoice } from './official.js';
 
 export interface OutgoingContent {
   text: string;
@@ -26,9 +27,22 @@ export class Sender {
     private readonly media: MediaService,
     /** In a multi-business install, refuses numbers that belong to another business. */
     private readonly canUse?: (sessionId: string) => boolean,
+    private readonly official?: OfficialNumbersService,
   ) {}
 
+  /** Numbers connected through Meta's Cloud API follow WhatsApp's template and 24-hour rules. */
+  isOfficial(sessionId: string): boolean {
+    return !!this.official?.isOfficial(sessionId);
+  }
+
+  /** Send a Meta-approved template (official numbers only). */
+  sendTemplate(sessionId: string, chatId: string, choice: TemplateChoice, value: (key: string) => string): Promise<SentMessage & { text: string }> {
+    if (!this.official?.isOfficial(sessionId)) throw new HttpError(400, 'Meta templates can only be sent from an official WhatsApp number');
+    return this.official.sendTemplate(sessionId, chatId, choice, value);
+  }
+
   async send(sessionId: string, chatId: string, content: OutgoingContent): Promise<SentMessage> {
+    if (this.official?.isOfficial(sessionId)) return this.official.send(sessionId, chatId, content);
     if (this.canUse && !this.canUse(sessionId)) throw new HttpError(403, 'That WhatsApp number does not belong to this account');
     const text = content.text.trim();
     if (text.length > MAX_TEXT) {

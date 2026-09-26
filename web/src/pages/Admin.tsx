@@ -864,6 +864,14 @@ export function AdminSettingsPage() {
           </Field>
         </div>
       </Card>
+      <Card title="Official WhatsApp API setup help" subtitle="Businesses see a step-by-step guide when they connect an official Meta number. Add your own video to show beside it.">
+        <Field
+          label="Setup video link (YouTube)"
+          hint="Paste a YouTube link, e.g. a walkthrough you recorded. Leave empty to show a link to YouTube search results and Meta's own guide instead."
+        >
+          <input className="input" value={value.metaGuideVideoUrl} onChange={e => set({ metaGuideVideoUrl: e.target.value })} placeholder="https://www.youtube.com/watch?v=…" />
+        </Field>
+      </Card>
       <Card title="Your password">
         <form
           className="grid cols-3"

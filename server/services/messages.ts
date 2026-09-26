@@ -133,7 +133,7 @@ export class MessagesService {
    * Forward-only: a late "delivered" never downgrades "read", and "failed" only lands on a message
    * WhatsApp had not yet delivered.
    */
-  applyAck(sessionId: string, waMessageId: string, rawStatus: unknown): boolean {
+  applyAck(sessionId: string, waMessageId: string, rawStatus: unknown, error?: string): boolean {
     const status = normalizeAckStatus(rawStatus);
     if (!status || !waMessageId) return false;
     const message = this.core.db.get<MessageRow>(
@@ -150,14 +150,15 @@ export class MessagesService {
       return false;
     }
     this.core.db.run('UPDATE messages SET status = ? WHERE id = ?', status, message.id);
-    if (message.recipient_id) this.advanceRecipient(message.recipient_id, status, at);
+    if (message.recipient_id) this.advanceRecipient(message.recipient_id, status, at, error);
     return true;
   }
 
-  private advanceRecipient(recipientId: number, status: 'delivered' | 'read' | 'failed', at: string): void {
+  private advanceRecipient(recipientId: number, status: 'delivered' | 'read' | 'failed', at: string, error?: string): void {
     if (status === 'failed') {
       this.core.db.run(
-        "UPDATE campaign_recipients SET status = 'failed', error = 'WhatsApp reported the message as failed', failed_at = ? WHERE id = ? AND status = 'sent'",
+        "UPDATE campaign_recipients SET status = 'failed', error = ?, failed_at = ? WHERE id = ? AND status = 'sent'",
+        (error || 'WhatsApp reported the message as failed').slice(0, 500),
         at,
         recipientId,
       );

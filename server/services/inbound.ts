@@ -11,6 +11,58 @@ import type { OutboxService } from './outbox.js';
 import type { SessionsService } from './sessions.js';
 import type { Bus } from './bus.js';
 import type { SessionStatus } from '../openwa/client.js';
+import type { OfficialNumbersService } from './official.js';
+import { metaErrorText } from '../meta/client.js';
+
+/** The parts of Meta's Cloud API webhook we use (object "whatsapp_business_account"). */
+interface MetaWebhook {
+  object?: string;
+  entry?: Array<{
+    id?: string;
+    changes?: Array<{
+      field?: string;
+      value?: {
+        metadata?: { phone_number_id?: string };
+        contacts?: Array<{ wa_id?: string; profile?: { name?: string } }>;
+        messages?: Array<Record<string, any>>;
+        statuses?: Array<{
+          id?: string;
+          status?: string;
+          recipient_id?: string;
+          errors?: Array<{ code?: number; title?: string; message?: string; error_data?: { details?: string } }>;
+        }>;
+        event?: string;
+        message_template_name?: string;
+        message_template_language?: string;
+      };
+    }>;
+  }>;
+}
+
+/** The customer's words in any message type we can reply to; '' for types with no text. */
+function metaText(message: Record<string, any>): string {
+  switch (message.type) {
+    case 'text':
+      return String(message.text?.body ?? '');
+    case 'button':
+      return String(message.button?.text ?? message.button?.payload ?? '');
+    case 'interactive':
+      return String(message.interactive?.button_reply?.title ?? message.interactive?.list_reply?.title ?? '');
+    case 'image':
+    case 'video':
+    case 'document':
+      return String(message[message.type]?.caption ?? '');
+    case 'location':
+      return [message.location?.name, message.location?.address].filter(Boolean).join(', ');
+    default:
+      return '';
+  }
+}
+
+/** Meta's "Stop promotions" button on marketing templates is an opt-out, whatever the keyword list says. */
+const STOP_PROMOTIONS = /^stop promotions?$/i;
+/** Meta error: the customer stopped marketing messages from this business on WhatsApp. */
+const MARKETING_STOPPED = 131050;
 
 /** OpenWA webhook body (docs/06-api-specification.md §6.6). */
 export interface WebhookEnvelope {
@@ -63,6 +115,7 @@ export class InboundService {
     private readonly outbox: OutboxService,
     private readonly sessions: SessionsService,
     private readonly bus: Bus,
+    private readonly official?: OfficialNumbersService,
   ) {}
 
   private alreadyProcessed(key: string | undefined): boolean {
@@ -120,7 +173,70 @@ export class InboundService {
     return null;
   }
 
-  private async handleMessage(sessionId: string, message: IncomingMessage): Promise<InboundOutcome> {
+  /**
+   * Events from Meta's Cloud API for official numbers: customer messages go through the same path
+   * as QR-linked numbers (opt-outs, attribution, auto-replies); delivery receipts update reports.
+   * Meta retries deliveries, and messages and receipts are both idempotent.
+   */
+  async handleMeta(payload: MetaWebhook): Promise<{ messages: number; statuses: number }> {
+    const counts = { messages: 0, statuses: 0 };
+    if (!this.official || payload?.object !== 'whatsapp_business_account' || !Array.isArray(payload.entry)) return counts;
+    for (const entry of payload.entry) {
+      for (const change of Array.isArray(entry?.changes) ? entry.changes : []) {
+        const value = change?.value ?? {};
+        if (change?.field === 'message_template_status_update') {
+          this.official.applyTemplateStatus(String(entry.id ?? ''), value.message_template_name, value.message_template_language, value.event);
+          continue;
+        }
+        if (change?.field !== 'messages') continue;
+        const number = this.official.byPhoneNumberId(String(value.metadata?.phone_number_id ?? ''));
+        if (!number) continue;
+        this.official.markWebhookSeen(number.id);
+        const names = new Map((value.contacts ?? []).map(c => [String(c.wa_id ?? ''), c.profile?.name]));
+
+        for (const message of Array.isArray(value.messages) ? value.messages : []) {
+          // Customers who hide their number behind a username can't be matched to a contact yet.
+          if (typeof message?.from !== 'string' || !/^\d{6,20}$/.test(message.from)) continue;
+          if (['reaction', 'system', 'unsupported', 'errors', 'ephemeral'].includes(message.type)) continue;
+          const body = metaText(message);
+          const isText = ['text', 'button', 'interactive'].includes(message.type);
+          await this.handleMessage(
+            number.id,
+            {
+              id: typeof message.id === 'string' ? message.id : undefined,
+              from: `${message.from}@c.us`,
+              body,
+              type: isText ? 'text' : String(message.type ?? 'text'),
+              timestamp: Number(message.timestamp) || 0,
+              kind: 'individual',
+              contact: { pushName: names.get(message.from) ?? undefined },
+            },
+            { optOut: message.type === 'button' && STOP_PROMOTIONS.test(body.trim()) },
+          );
+          counts.messages++;
+        }
+
+        for (const status of Array.isArray(value.statuses) ? value.statuses : []) {
+          if (typeof status?.id !== 'string') continue;
+          const problem = status.errors?.[0];
+          const error = problem
+            ? `${metaErrorText(problem.code, problem.error_data?.details ?? problem.message ?? problem.title ?? '')}${problem.code ? ` (Meta error ${problem.code})` : ''}`
+            : undefined;
+          this.messages.applyAck(number.id, status.id, status.status, error);
+          if (status.status === 'failed' && problem?.code === MARKETING_STOPPED && status.recipient_id) {
+            const contact = this.contacts.findByPhone(status.recipient_id.replace(/\D/g, ''));
+            if (contact && this.contacts.setConsent(contact.id, 'opted_out', 'whatsapp')) {
+              this.campaigns.attributeOptOut(contact.id, nowIso(this.core.clock()));
+            }
+          }
+          counts.statuses++;
+        }
+      }
+    }
+    return counts;
+  }
+
+  private async handleMessage(sessionId: string, message: IncomingMessage, options: { optOut?: boolean } = {}): Promise<InboundOutcome> {
     if (message.fromMe) return 'ignored';
     const kind = message.kind ?? (message.isGroup ? 'group' : 'individual');
     if (kind !== 'individual') return 'ignored';
@@ -153,7 +269,7 @@ export class InboundService {
 
       const settings = this.settings.get();
       const keyword = normalizeKeywordText(body);
-      if (keyword && settings.compliance.optOutKeywords.some(k => normalizeKeywordText(k) === keyword)) {
+      if (options.optOut || (keyword && settings.compliance.optOutKeywords.some(k => normalizeKeywordText(k) === keyword))) {
         const changed = this.contacts.setConsent(contact.id, 'opted_out', 'keyword');
         this.campaigns.attributeOptOut(contact.id, at);
         if (changed && settings.compliance.optOutReply.trim()) {

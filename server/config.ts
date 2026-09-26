@@ -19,6 +19,8 @@ export interface AppConfig {
   };
   /** URL OpenWA posts events to. Inside docker-compose this is the internal service name. */
   webhookUrl: string;
+  /** Public URL Meta posts official Cloud API events to (needs PUBLIC_URL); null when not reachable. */
+  metaWebhookUrl: string | null;
   /** Public base URL of this app. Needed for click-tracked links; null disables tracking. */
   publicUrl: string | null;
   /** First platform admin, created on first boot. */
@@ -109,6 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       ),
     },
     webhookUrl,
+    metaWebhookUrl: publicUrl ? `${publicUrl}/webhooks/meta` : null,
     publicUrl,
     adminEmail: (env.ADMIN_EMAIL ?? 'admin@example.com').trim().toLowerCase(),
     adminPassword,

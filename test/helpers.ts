@@ -10,6 +10,7 @@ import { silentLogger, type Core } from '../server/context.js';
 import type { AppConfig } from '../server/config.js';
 import { signOpenWABody } from '../server/lib/crypto.js';
 import { startFakeOpenWA, type FakeOpenWA } from './fake-openwa.js';
+import { FakeMeta } from './fake-meta.js';
 
 export class FakeClock {
   private current: number;
@@ -27,6 +28,7 @@ export class FakeClock {
 
 export interface TestEnv {
   fake: FakeOpenWA;
+  meta: FakeMeta;
   clock: FakeClock;
   core: Core;
   s: Services;
@@ -60,6 +62,7 @@ export async function createTestEnv(options: { publicUrl?: string | null; now?: 
     mediaDir,
     openwa: { url: fake.url, apiKey: fake.apiKey, webhookSecret: 'whsec_test_secret_0123456789' },
     webhookUrl: 'http://wa-reach.test/webhooks/openwa',
+    metaWebhookUrl: options.publicUrl === null ? null : `${options.publicUrl ?? 'https://reach.example.com'}/webhooks/meta`,
     publicUrl: options.publicUrl === undefined ? 'https://reach.example.com' : options.publicUrl,
     adminEmail: 'admin@example.com',
     adminPassword: 'correct-horse-battery',
@@ -70,7 +73,9 @@ export async function createTestEnv(options: { publicUrl?: string | null; now?: 
     generated: [],
   };
   const clock = new FakeClock(options.now ?? DAYTIME);
+  const meta = new FakeMeta();
   const platform = new Platform({
+    meta,
     config,
     starterKit: options.starterKit ?? false,
     openwa: new OpenWAClient({ baseUrl: fake.url, apiKey: fake.apiKey }),
@@ -138,6 +143,7 @@ export async function createTestEnv(options: { publicUrl?: string | null; now?: 
 
   return {
     fake,
+    meta,
     clock,
     core,
     s,

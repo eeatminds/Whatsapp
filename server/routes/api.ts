@@ -23,7 +23,13 @@ function filterFromQuery(query: unknown) {
   return contactFilterSchema.parse(query ?? {});
 }
 
-export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Services): Promise<void> {
+export interface PlatformInfo {
+  /** Setup video the platform admin chose to show beside the official-number guide. */
+  metaGuideVideoUrl(): string | null;
+  supportContact(): string | null;
+}
+
+export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Services, platform?: PlatformInfo): Promise<void> {
   /** Internal addresses and raw gateway errors are for the platform admin only. */
   const gatewayFor = (request: FastifyRequest) => {
     const gateway = s.sessions.gatewayStatus();
@@ -66,6 +72,7 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   app.get('/sessions', async request => {
     const sessions = await s.sessions.list(true);
     const tz = s.settings.get().timezone;
+    const templates = s.official.templateCounts();
     return {
       gateway: gatewayFor(request),
       defaultSessionId: s.settings.get().defaultSessionId,
@@ -74,6 +81,7 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
         ...session,
         marketingSentToday: s.messages.marketingSentToday(session.id, tz),
         hold: s.dispatcher.sessionBackoff(session.id),
+        templates: session.official ? (templates.get(session.official.wabaId) ?? { approved: 0, total: 0 }) : undefined,
       })),
     };
   });
@@ -108,6 +116,25 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
     const { phone } = z.object({ phone: z.string() }).parse(request.body);
     return s.sessions.pairingCode(params(sessionParam, request).id, phone);
   });
+
+  // ---------------------------------------------------------------- official numbers (Meta Cloud API)
+
+  app.get('/official/setup', async () => ({
+    ...s.official.setup(),
+    guideVideoUrl: platform?.metaGuideVideoUrl() ?? null,
+    supportContact: platform?.supportContact() ?? null,
+  }));
+
+  app.post('/official/numbers', async (request, reply) => {
+    const session = await s.sessions.addOfficial(request.body);
+    if (!s.settings.get().defaultSessionId) s.settings.update({ defaultSessionId: session.id });
+    s.sessions.invalidate();
+    return reply.status(201).send(session);
+  });
+  app.patch('/official/numbers/:id', async request => s.official.update(params(sessionParam, request).id, request.body));
+  app.post('/official/numbers/:id/check', async request => s.official.check(params(sessionParam, request).id));
+  app.post('/official/numbers/:id/sync-templates', async request => ({ items: await s.official.syncTemplates(params(sessionParam, request).id) }));
+  app.get('/official/numbers/:id/templates', async request => ({ items: s.official.templates(params(sessionParam, request).id) }));
 
   // ---------------------------------------------------------------- contacts
 
@@ -332,7 +359,14 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
 
   app.get('/inbox/:id', async request => {
     const { id } = params(idParam, request);
-    return { contact: s.contacts.get(id), messages: s.messages.thread(id, 300), sessionId: s.messages.lastSessionFor(id) };
+    const sessionId = s.messages.lastSessionFor(id);
+    const contact = s.contacts.get(id);
+    // Official numbers can only send free-form messages within 24 hours of the customer's last one.
+    const official =
+      sessionId && s.official.isOfficial(sessionId)
+        ? { windowOpenUntil: s.official.windowOpenUntil(sessionId, contact.waChatId ?? chatIdFor(contact.phone)) }
+        : null;
+    return { contact, messages: s.messages.thread(id, 300), sessionId, official };
   });
 
   app.post('/inbox/:id/seen', async request => ({ updated: s.messages.markSeen(params(idParam, request).id) }));

@@ -18,7 +18,8 @@ import {
 import { Button, Callout, Card, ErrorNote, Field, Loading, NumberInput, PageHeader, Toggle, useToast } from '../components/ui';
 import { IconArrowLeft, IconPlus, IconSend, IconX } from '../components/icons';
 import { Composer, MessagePreview } from '../components/composer';
-import { SessionSelect, TagPicker, useTags } from '../components/pickers';
+import { SessionSelect, TagPicker, useSessions, useTags } from '../components/pickers';
+import { TemplatePicker, templatePreviewText, useTemplate } from '../components/official';
 import { AUDIENCE_HANDOFF } from './Contacts';
 import { formatDuration, formatNumber, fromLocalInput, toLocalInput } from '../format';
 
@@ -53,6 +54,7 @@ export function CampaignEditorPage() {
   const { data: system } = useApi<SystemInfo>('/api/system');
   const { data: segments } = useApi<Segment[]>('/api/segments');
   const { data: tags } = useTags();
+  const { data: numbers } = useSessions();
 
   const [campaignId, setCampaignId] = useState<number | null>(id ? Number(id) : null);
   const [loaded, setLoaded] = useState(!id);
@@ -133,17 +135,26 @@ export function CampaignEditorPage() {
   }, [audience, options?.requireOptIn, audienceValid]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const variant = variants.find(v => v.key === activeVariant) ?? variants[0];
-  const messageValid = variants.every(v => v.body.trim() || v.mediaId) && variants.reduce((s, v) => s + v.weight, 0) === 100;
+  // Official (Meta Cloud API) numbers send approved templates instead of free text.
+  const official = !!sessionId && numbers?.items.find(n => n.id === sessionId)?.channel === 'official';
+  const previewTemplate = useTemplate(official ? sessionId : null, variant.template);
+  const messageValid =
+    variants.every(v =>
+      official
+        ? !!v.template && Object.values(v.template.params).every(p => p.trim() !== '')
+        : v.body.trim() || v.mediaId,
+    ) && variants.reduce((s, v) => s + v.weight, 0) === 100;
   const rate = options ? Math.min(options.perMinute, settings?.sending.sessionMaxPerMinute ?? options.perMinute) : 1;
   const estimate = preview ? Math.ceil(preview.eligible / rate) : 0;
   const footer = options?.appendOptOut ? (settings?.compliance.optOutFooter ?? null) : null;
-  const hasLinks = useMemo(() => variants.some(v => /https?:\/\//.test(v.body)), [variants]);
+  const hasLinks = useMemo(() => !official && variants.some(v => /https?:\/\//.test(v.body)), [variants, official]);
 
   const payload = () => ({
     name: name.trim() || 'Untitled campaign',
     sessionId,
     audience,
-    variants,
+    // Keep only what the chosen number can send: a template on official numbers, text/media otherwise.
+    variants: variants.map(v => (official ? v : { ...v, template: null })),
     options,
     scheduledAt: scheduleLater ? fromLocalInput(scheduledAt) : null,
   });
@@ -327,7 +338,7 @@ export function CampaignEditorPage() {
                   icon={<IconPlus size={14} />}
                   onClick={() => {
                     const key = KEYS[variants.length];
-                    setVariants(rebalance([...variants, { key, body: variant.body, mediaId: variant.mediaId, weight: 0 }]));
+                    setVariants(rebalance([...variants, { key, body: variant.body, mediaId: variant.mediaId, template: variant.template, weight: 0 }]));
                     setActiveVariant(key);
                   }}
                 >
@@ -374,13 +385,31 @@ export function CampaignEditorPage() {
                   {variants.reduce((s, v) => s + v.weight, 0) !== 100 && <span className="error-text">Shares must add up to 100%.</span>}
                 </div>
               )}
-              <Composer
-                key={variant.key}
-                body={variant.body}
-                mediaId={variant.mediaId}
-                onChange={next => setVariants(variants.map(v => (v.key === variant.key ? { ...v, body: next.body, mediaId: next.mediaId } : v)))}
-              />
+              <Field label="Send from" hint={<Link to="/numbers">Manage numbers</Link>}>
+                <SessionSelect value={sessionId} onChange={setSessionId} />
+              </Field>
+              {official && sessionId ? (
+                <TemplatePicker
+                  key={`${sessionId}:${variant.key}`}
+                  sessionId={sessionId}
+                  value={variant.template}
+                  onChange={template => setVariants(variants.map(v => (v.key === variant.key ? { ...v, template } : v)))}
+                />
+              ) : (
+                <Composer
+                  key={variant.key}
+                  body={variant.body}
+                  mediaId={variant.mediaId}
+                  onChange={next => setVariants(variants.map(v => (v.key === variant.key ? { ...v, body: next.body, mediaId: next.mediaId } : v)))}
+                />
+              )}
               <div className="divider" />
+              {official ? (
+                <p className="hint">
+                  Unsubscribe line and link tracking don't apply to templates: add a “Stop promotions” button to the template in Meta, and customers who tap it are opted out automatically.
+                </p>
+              ) : (
+                <>
               <Toggle
                 checked={options.appendOptOut}
                 onChange={appendOptOut => setOptions({ ...options, appendOptOut })}
@@ -398,10 +427,20 @@ export function CampaignEditorPage() {
                     : 'Set PUBLIC_URL on the server to enable click tracking.'
                 }
               />
+                </>
+              )}
             </div>
           </Card>
           <Card title={variants.length > 1 ? `Preview: version ${variant.key}` : 'Preview'}>
-            <MessagePreview body={variant.body} mediaId={variant.mediaId} footer={footer} />
+            {official ? (
+              previewTemplate && variant.template ? (
+                <MessagePreview body={templatePreviewText(previewTemplate, variant.template.params)} mediaId={variant.template.headerMediaId} footer={null} />
+              ) : (
+                <p className="secondary small">Choose a template to see a preview.</p>
+              )
+            ) : (
+              <MessagePreview body={variant.body} mediaId={variant.mediaId} footer={footer} />
+            )}
             {hasLinks && options.trackLinks && system?.trackingEnabled && <p className="hint" style={{ marginTop: 8 }}>Links will be replaced with tracked short links when sent.</p>}
           </Card>
         </div>
@@ -441,7 +480,12 @@ export function CampaignEditorPage() {
               checked={options.validateNumbers}
               onChange={validateNumbers => setOptions({ ...options, validateNumbers })}
               label="Check each number is on WhatsApp first"
-              description="Skips numbers without WhatsApp instead of sending into the void. Adds a lookup per new number."
+              disabled={official}
+              description={
+                official
+                  ? 'Not needed on official numbers: Meta reports undeliverable numbers after sending.'
+                  : 'Skips numbers without WhatsApp instead of sending into the void. Adds a lookup per new number.'
+              }
             />
             <div className="divider" />
             <div className="stack">
@@ -481,9 +525,15 @@ export function CampaignEditorPage() {
               </dd>
               <dt>Starts</dt>
               <dd>{scheduleLater ? new Date(fromLocalInput(scheduledAt)).toLocaleString() : 'Immediately'}</dd>
+              {official && (
+                <>
+                  <dt>Template</dt>
+                  <dd>{variants.map(v => v.template?.name ?? '—').join(' · ')} (Meta bills your account per message)</dd>
+                </>
+              )}
               <dt>Extras</dt>
               <dd>
-                {[options.appendOptOut && 'unsubscribe line', options.trackLinks && system?.trackingEnabled && 'click tracking', options.validateNumbers && 'number check'].filter(Boolean).join(', ') || 'None'}
+                {[!official && options.appendOptOut && 'unsubscribe line', options.trackLinks && system?.trackingEnabled && 'click tracking', options.validateNumbers && 'number check'].filter(Boolean).join(', ') || 'None'}
               </dd>
             </dl>
             {!sessionId && <Callout tone="warn">Choose a number to send from on the Sending step.</Callout>}

@@ -24,7 +24,7 @@ function Ticks({ status }: { status: string }) {
 }
 
 function Thread({ contactId, onBack }: { contactId: number; onBack: () => void }) {
-  const { data, reload } = useApi<{ contact: Contact; messages: Message[]; sessionId: string | null }>(`/api/inbox/${contactId}`, { poll: 5000 });
+  const { data, reload } = useApi<{ contact: Contact; messages: Message[]; sessionId: string | null; official: { windowOpenUntil: string | null } | null }>(`/api/inbox/${contactId}`, { poll: 5000 });
   const [text, setText] = useState('');
   const [mediaId, setMediaId] = useState<number | null>(null);
   const [picking, setPicking] = useState(false);
@@ -107,6 +107,19 @@ function Thread({ contactId, onBack }: { contactId: number; onBack: () => void }
         })}
         <div ref={bottom} />
       </div>
+      {data.official && (
+        <div style={{ padding: '8px 12px 0' }}>
+          {data.official.windowOpenUntil ? (
+            <p className="hint" style={{ margin: 0 }}>
+              Official number: you can reply freely until {new Date(data.official.windowOpenUntil).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })} (24 hours after their last message).
+            </p>
+          ) : (
+            <Callout tone="warn">
+              The 24-hour reply window is closed. WhatsApp only lets official numbers message this customer with an approved template now: send them a campaign, or wait until they message you.
+            </Callout>
+          )}
+        </div>
+      )}
       {contact.consent === 'opted_out' && (
         <div style={{ padding: '8px 12px 0' }}>
           <Callout tone="warn">This contact opted out of marketing. Replying to their questions is fine; don't send promotions.</Callout>
