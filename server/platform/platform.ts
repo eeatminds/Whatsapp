@@ -10,6 +10,7 @@ import type { OpenWAApi, OpenWASession } from '../openwa/client.js';
 import { createServices, type Services } from '../services/index.js';
 import type { SessionScope } from '../services/sessions.js';
 import { MARKETING_SOURCES } from '../services/messages.js';
+import { seedStarterKit } from '../services/starter-kit.js';
 import { settingsSchema, type Settings } from '../services/settings.js';
 import { PLATFORM_MIGRATIONS } from './schema.js';
 import { hashPassword, temporaryPassword, verifyPassword } from './passwords.js';
@@ -207,6 +208,8 @@ export interface PlatformOptions {
   /** Platform database; defaults to DATA_DIR/platform.sqlite (':memory:' when the app DB is). */
   db?: Db;
   random?: () => number;
+  /** Add the ready-made templates and switched-off automations to each business (default true). */
+  starterKit?: boolean;
 }
 
 export class Platform {
@@ -216,6 +219,7 @@ export class Platform {
   private readonly openwa: OpenWAApi;
   private readonly log: Logger;
   private readonly random?: () => number;
+  private readonly starterKit: boolean;
   private readonly runtimes = new Map<string, TenantRuntime>();
   private gatewayCache: { at: number; sessions: OpenWASession[] } | null = null;
   private gatewayFetch: Promise<OpenWASession[]> | null = null;
@@ -227,6 +231,7 @@ export class Platform {
     this.clock = options.clock ?? (() => new Date());
     this.log = options.log;
     this.random = options.random;
+    this.starterKit = options.starterKit ?? true;
     const inMemory = options.config.dbPath === ':memory:';
     this.db = options.db ?? openDatabase(inMemory ? ':memory:' : join(options.config.dataDir, 'platform.sqlite'), PLATFORM_MIGRATIONS);
   }
@@ -606,6 +611,13 @@ export class Platform {
       maxNumbers: () => this.db.get<{ max_numbers: number }>('SELECT max_numbers FROM tenants WHERE id = ?', tenant)?.max_numbers ?? 1,
     };
     const services = createServices(core, { random: this.random, scope });
+    if (this.starterKit) {
+      try {
+        seedStarterKit(core.db, services, this.now());
+      } catch (error) {
+        this.log.warn(`Could not add the starter kit for ${tenant}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     const runtime: TenantRuntime = { tenantId: tenant, core, services, scope, running: false };
     this.runtimes.set(tenant, runtime);
     services.dispatcher.recover();

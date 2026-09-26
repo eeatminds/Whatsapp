@@ -7,16 +7,18 @@ import { IconFile, IconPaperclip, IconTemplate } from './icons';
 /** Render WhatsApp's lightweight markup (*bold* _italic_ ~strike~ ```mono```) as React nodes. */
 export function WhatsAppText({ text }: { text: string }) {
   const nodes: ReactNode[] = [];
-  const pattern = /```([\s\S]+?)```|\*([^*\n]+)\*|_([^_\n]+)_|~([^~\n]+)~/g;
+  // {{placeholders}} are matched first and shown as-is, so the underscore in {{first_name}} isn't read as italics.
+  const pattern = /(\{\{[^{}\n]*\}\})|```([\s\S]+?)```|\*([^*\n]+)\*|_([^_\n]+)_|~([^~\n]+)~/g;
   let last = 0;
   let match: RegExpExecArray | null;
   let key = 0;
   while ((match = pattern.exec(text))) {
     if (match.index > last) nodes.push(<Fragment key={key++}>{text.slice(last, match.index)}</Fragment>);
-    if (match[1] !== undefined) nodes.push(<code key={key++}>{match[1]}</code>);
-    else if (match[2] !== undefined) nodes.push(<strong key={key++}>{match[2]}</strong>);
-    else if (match[3] !== undefined) nodes.push(<em key={key++}>{match[3]}</em>);
-    else if (match[4] !== undefined) nodes.push(<s key={key++}>{match[4]}</s>);
+    if (match[1] !== undefined) nodes.push(<Fragment key={key++}>{match[1]}</Fragment>);
+    else if (match[2] !== undefined) nodes.push(<code key={key++}>{match[2]}</code>);
+    else if (match[3] !== undefined) nodes.push(<strong key={key++}>{match[3]}</strong>);
+    else if (match[4] !== undefined) nodes.push(<em key={key++}>{match[4]}</em>);
+    else if (match[5] !== undefined) nodes.push(<s key={key++}>{match[5]}</s>);
     last = match.index + match[0].length;
   }
   if (last < text.length) nodes.push(<Fragment key={key++}>{text.slice(last)}</Fragment>);

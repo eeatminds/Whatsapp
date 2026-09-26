@@ -47,7 +47,7 @@ export interface TestEnv {
 /** 06:00 UTC = 11:30 in Asia/Kolkata: inside business hours. */
 export const DAYTIME = '2026-09-25T06:00:00.000Z';
 
-export async function createTestEnv(options: { publicUrl?: string | null; now?: string } = {}): Promise<TestEnv> {
+export async function createTestEnv(options: { publicUrl?: string | null; now?: string; starterKit?: boolean } = {}): Promise<TestEnv> {
   const fake = await startFakeOpenWA();
   const session = fake.addSession('main', 'ready');
   const mediaDir = mkdtempSync(join(tmpdir(), 'wa-reach-test-'));
@@ -72,6 +72,7 @@ export async function createTestEnv(options: { publicUrl?: string | null; now?: 
   const clock = new FakeClock(options.now ?? DAYTIME);
   const platform = new Platform({
     config,
+    starterKit: options.starterKit ?? false,
     openwa: new OpenWAClient({ baseUrl: fake.url, apiKey: fake.apiKey }),
     clock: clock.now,
     log: silentLogger,

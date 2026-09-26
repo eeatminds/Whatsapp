@@ -166,6 +166,13 @@ function AutoRepliesTab() {
 
   return (
     <div className="stack loose">
+      {data && data.length > 0 && data.every(r => !r.active) && (
+        <Callout tone="success">
+          <strong>Ready-made examples, all switched off.</strong> Open one, replace the text in [square brackets] with your details, then switch it
+          on and check it with <em>Try it</em> below. The greeting menu works together with the Price list, Location and Talk-to-a-person replies,
+          so switch those on too.
+        </Callout>
+      )}
       <Callout>
         STOP and START (and the other keywords in <Link to="/settings">Settings</Link>) are handled automatically: they update consent and send a confirmation before any rule below runs.
       </Callout>
@@ -531,6 +538,12 @@ function SequencesTab() {
         : 'Manual enrollment';
   return (
     <div className="stack loose">
+      {data && data.length > 0 && data.every(q => !q.active) && (
+        <Callout tone="success">
+          <strong>Ready-made examples, all switched off.</strong> Edit the messages, then switch a sequence on. It starts for a contact when they get
+          its tag (for example, add the tag <em>purchased</em> after an order) or when you enroll them yourself.
+        </Callout>
+      )}
       <Card
         title="Drip sequences"
         subtitle="A series of messages spaced out over time: onboarding, follow-ups, reminders."

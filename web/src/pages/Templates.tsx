@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { del, patch, post, useApi, errorMessage, type Template } from '../api';
-import { Button, Card, Empty, ErrorNote, Field, Loading, Modal, PageHeader, useConfirm, useToast } from '../components/ui';
+import { Button, Callout, Card, Empty, ErrorNote, Field, Loading, Modal, PageHeader, useConfirm, useToast } from '../components/ui';
 import { IconPlus } from '../components/icons';
 import { Composer, MessagePreview, WhatsAppText } from '../components/composer';
 import { relativeTime } from '../format';
@@ -68,6 +68,12 @@ export function TemplatesPage() {
         }
       />
       <ErrorNote error={error} />
+      {data?.some(t => t.body.includes('[')) && (
+        <Callout tone="success">
+          Starter templates for common messages are included. Replace the text in [square brackets] with your details before sending.{' '}
+          {'{{first_name}}'} and {'{{business_name}}'} fill in automatically for each customer.
+        </Callout>
+      )}
       {loading && !data ? (
         <Loading />
       ) : data?.length === 0 ? (
