@@ -18,6 +18,11 @@ export const settingsSchema = z.object({
     .regex(/^[A-Za-z]{2}$/, 'Two-letter ISO country code')
     .transform(v => v.toUpperCase()),
   defaultSessionId: z.string().nullable(),
+  /**
+   * Save people who message a connected number but aren't in Contacts yet. Off by default: a linked
+   * WhatsApp account also receives personal chats, and those must not flow into the contact list.
+   */
+  saveUnknownSenders: z.boolean(),
   quietHours: z.object({ enabled: z.boolean(), start: hhmm, end: hhmm }),
   sending: z.object({
     /** Hard ceiling per WhatsApp number, across every campaign and sequence sharing it. */
@@ -51,6 +56,7 @@ export function defaultSettings(env: NodeJS.ProcessEnv = process.env): Settings 
     timezone: tz,
     defaultCountry: country,
     defaultSessionId: null,
+    saveUnknownSenders: false,
     quietHours: { enabled: true, start: '21:00', end: '09:00' },
     sending: {
       sessionMaxPerMinute: 10,

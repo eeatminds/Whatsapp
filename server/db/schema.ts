@@ -295,4 +295,18 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX messages_window ON messages (session_id, chat_id, direction, created_at);
   `,
+  `
+  -- Clean up after WhatsApp system notices (encryption banners, security-code changes, call logs)
+  -- were recorded as empty "unknown" messages, and contacts were created from them.
+  DELETE FROM messages
+   WHERE direction = 'in' AND type IN ('unknown', 'revoked', 'call', 'masked') AND TRIM(COALESCE(body, '')) = '';
+  DELETE FROM contacts
+   WHERE source = 'inbound' AND consent <> 'opted_out'
+     AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.contact_id = contacts.id)
+     AND NOT EXISTS (SELECT 1 FROM contact_tags t WHERE t.contact_id = contacts.id)
+     AND NOT EXISTS (SELECT 1 FROM campaign_recipients r WHERE r.contact_id = contacts.id)
+     AND NOT EXISTS (SELECT 1 FROM sequence_enrollments e WHERE e.contact_id = contacts.id);
+  UPDATE contacts
+     SET last_inbound_at = (SELECT MAX(m.created_at) FROM messages m WHERE m.contact_id = contacts.id AND m.direction = 'in');
+  `,
 ];

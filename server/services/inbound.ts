@@ -59,6 +59,27 @@ function metaText(message: Record<string, any>): string {
   }
 }
 
+/**
+ * Message types with nothing a person wrote: WhatsApp's system notices ("messages are end-to-end
+ * encrypted", security-code changes), call logs and deleted-message stubs. OpenWA reports most of
+ * these as `unknown` with an empty body; they never appear as texts on the phone, so they are
+ * dropped instead of filling the inbox and creating contacts.
+ */
+const NON_MESSAGE_TYPES = new Set([
+  'unknown',
+  'revoked',
+  'call',
+  'call_log',
+  'masked',
+  'e2e_notification',
+  'notification',
+  'notification_template',
+  'gp2',
+  'protocol',
+  'ciphertext',
+  'broadcast_notification',
+]);
+
 /** Meta's "Stop promotions" button on marketing templates is an opt-out, whatever the keyword list says. */
 const STOP_PROMOTIONS = /^stop promotions?$/i;
 /** Meta error: the customer stopped marketing messages from this business on WhatsApp. */
@@ -93,6 +114,7 @@ export type InboundOutcome =
   | 'ack'
   | 'session_status'
   | 'unresolved_sender'
+  | 'unknown_sender'
   | 'duplicate_message'
   | 'opted_out'
   | 'opted_in'
@@ -240,6 +262,9 @@ export class InboundService {
     if (message.fromMe) return 'ignored';
     const kind = message.kind ?? (message.isGroup ? 'group' : 'individual');
     if (kind !== 'individual') return 'ignored';
+    const type = message.type ?? 'text';
+    const text = typeof message.body === 'string' ? message.body : '';
+    if (NON_MESSAGE_TYPES.has(type) || ((type === 'text' || type === 'chat') && !text.trim())) return 'ignored';
 
     const phone = await this.resolvePhone(sessionId, message);
     if (!phone) {
@@ -252,6 +277,8 @@ export class InboundService {
     const at = nowIso(sentAt);
     const chatId = phoneFromChatId(message.from) ? message.from! : chatIdFor(phone);
     const pushName = message.contact?.pushName || message.contact?.name || null;
+    // Only the business adds contacts, unless it chose to save everyone who writes in.
+    if (!this.contacts.findByPhone(phone) && !this.settings.get().saveUnknownSenders) return 'unknown_sender';
 
     return this.core.db.tx(() => {
       const { row: contact } = this.contacts.touchInbound(phone, chatId, pushName, at);

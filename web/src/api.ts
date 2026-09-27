@@ -382,6 +382,7 @@ export interface Settings {
   timezone: string;
   defaultCountry: string;
   defaultSessionId: string | null;
+  saveUnknownSenders: boolean;
   quietHours: { enabled: boolean; start: string; end: string };
   sending: { sessionMaxPerMinute: number; dailyCapPerSession: number; frequencyCapHours: number; breakerThreshold: number; defaultPerMinute: number };
   compliance: { optOutKeywords: string[]; optInKeywords: string[]; optOutReply: string; optInReply: string; optOutFooter: string };

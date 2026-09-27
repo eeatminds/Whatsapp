@@ -49,7 +49,7 @@ export interface TestEnv {
 /** 06:00 UTC = 11:30 in Asia/Kolkata: inside business hours. */
 export const DAYTIME = '2026-09-25T06:00:00.000Z';
 
-export async function createTestEnv(options: { publicUrl?: string | null; now?: string; starterKit?: boolean } = {}): Promise<TestEnv> {
+export async function createTestEnv(options: { publicUrl?: string | null; now?: string; starterKit?: boolean; saveUnknownSenders?: boolean } = {}): Promise<TestEnv> {
   const fake = await startFakeOpenWA();
   const session = fake.addSession('main', 'ready');
   const mediaDir = mkdtempSync(join(tmpdir(), 'wa-reach-test-'));
@@ -90,7 +90,8 @@ export async function createTestEnv(options: { publicUrl?: string | null; now?: 
   runtime.scope.add(session.id);
   const core: Core = runtime.core;
   const s = runtime.services;
-  s.settings.update({ defaultSessionId: session.id });
+  // Most tests exercise flows that start with a stranger messaging in; the default is off.
+  s.settings.update({ defaultSessionId: session.id, saveUnknownSenders: options.saveUnknownSenders ?? true });
   const apiKey = platform.rotateApiKey(tenant.id);
   const app = await buildApp(platform, { staticDir: null });
 

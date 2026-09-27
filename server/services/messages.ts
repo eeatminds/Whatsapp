@@ -282,7 +282,12 @@ export class MessagesService {
   }
 
   unreadCount(): number {
-    return this.core.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM messages WHERE direction = 'in' AND seen = 0")?.n ?? 0;
+    // People with unread messages, not messages: someone who writes three times counts once.
+    return (
+      this.core.db.get<{ n: number }>(
+        "SELECT COUNT(DISTINCT contact_id) AS n FROM messages WHERE direction = 'in' AND seen = 0 AND contact_id IS NOT NULL",
+      )?.n ?? 0
+    );
   }
 
   lastSessionFor(contactId: number): string | null {
