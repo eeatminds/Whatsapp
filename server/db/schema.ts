@@ -309,4 +309,31 @@ export const MIGRATIONS: string[] = [
   UPDATE contacts
      SET last_inbound_at = (SELECT MAX(m.created_at) FROM messages m WHERE m.contact_id = contacts.id AND m.direction = 'in');
   `,
+  `
+  -- Lead sources: private links that Google Sheets, website forms, Wix or Zapier post new leads to.
+  CREATE TABLE lead_sources (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'other',
+    token TEXT NOT NULL UNIQUE,
+    active INTEGER NOT NULL DEFAULT 1,
+    actions TEXT NOT NULL DEFAULT '{}',
+    thank_you_url TEXT,
+    received INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    last_received_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  -- What happened to each submission. Only the resulting contact and an error text are kept, never the raw form data.
+  CREATE TABLE lead_events (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES lead_sources (id) ON DELETE CASCADE,
+    contact_id INTEGER REFERENCES contacts (id) ON DELETE SET NULL,
+    status TEXT NOT NULL CHECK (status IN ('added', 'updated', 'failed')),
+    detail TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX lead_events_source ON lead_events (source_id, id);
+  `,
 ];

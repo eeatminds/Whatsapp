@@ -212,6 +212,8 @@ export interface TemplateSlot {
   key: string;
   label: string;
   hint: string;
+  /** Link button routed through click tracking: the value is the real destination URL. */
+  tracked?: boolean;
 }
 
 export interface MetaTemplate {
@@ -318,6 +320,8 @@ export interface Step {
   delayMinutes: number;
   body: string;
   mediaId?: number | null;
+  /** Meta-approved template, used on official numbers when the 24-hour window is closed. */
+  template?: TemplateChoice | null;
 }
 
 export type Trigger = { type: 'manual' } | { type: 'tag_added'; tagId: number } | { type: 'opted_in' };
@@ -495,4 +499,20 @@ export interface PlatformSettings {
   defaultDailyCap: number;
   defaultPerMinuteCap: number;
   metaGuideVideoUrl: string;
+  alertPhone: string;
+  alertTenantId: string;
+}
+
+export interface HealthIssue {
+  key: string;
+  severity: 'critical' | 'warning';
+  title: string;
+  detail: string;
+  business: { id: string; name: string } | null;
+  notify: boolean;
+}
+
+export interface HealthReport {
+  issues: HealthIssue[];
+  backup: { lastRunAt: string | null; lastOkAt: string | null; lastError: string | null; lastFile: string | null } | null;
 }

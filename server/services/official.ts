@@ -427,14 +427,31 @@ export class OfficialNumbersService {
     return this.templates(id);
   }
 
+  /** Button URLs starting with this prefix go through our click-tracking redirect. */
+  trackingPrefix(): string | null {
+    return this.core.config.publicUrl ? `${this.core.config.publicUrl}/r/` : null;
+  }
+
   private toTemplate(row: TemplateRow): OfficialTemplate {
-    return {
-      name: row.name,
-      language: row.language,
-      status: row.status,
-      category: row.category,
-      ...describeTemplate(parseJson<MetaTemplateComponent[]>(row.components, []), row.category),
-    };
+    const shape = describeTemplate(parseJson<MetaTemplateComponent[]>(row.components, []), row.category);
+    const prefix = this.trackingPrefix();
+    if (prefix) {
+      for (const slot of shape.slots) {
+        const [part, index, kind] = slot.key.split(':');
+        const url = part === 'button' && kind === '1' ? shape.buttons[Number(index)]?.url : undefined;
+        if (url && url.startsWith(prefix)) {
+          slot.tracked = true;
+          slot.hint = 'Where the button should open. Every tap is counted in the campaign report.';
+        }
+      }
+    }
+    return { name: row.name, language: row.language, status: row.status, category: row.category, ...shape };
+  }
+
+  /** Slot keys of a choice's link buttons that go through click tracking. */
+  trackedSlots(id: string, choice: Pick<TemplateChoice, 'name' | 'language'>): string[] {
+    const template = this.templateRow(this.row(id), choice);
+    return template ? this.toTemplate(template).slots.filter(s => s.tracked).map(s => s.key) : [];
   }
 
   templates(id: string): OfficialTemplate[] {
@@ -480,6 +497,8 @@ export class OfficialNumbersService {
     }
     const empty = shape.slots.find(slot => !(choice.params[slot.key] ?? '').trim());
     if (empty) return `Fill in ${empty.label} for template “${choice.name}”`;
+    const badLink = shape.slots.find(slot => slot.tracked && !/^https?:\/\/\S+$/i.test((choice.params[slot.key] ?? '').trim()));
+    if (badLink) return `${badLink.label} must be a full web address starting with https://`;
     return null;
   }
 

@@ -58,6 +58,9 @@ Numbers are isolated per business. All businesses share one OpenWA gateway, and 
 | **Inbox** | Every conversation in one place. Each message shows its source label (campaign, drip, auto-reply) and read ticks, and you can reply with attachments. |
 | **Safety** | Account-protection controls: <ul><li>Per-number caps per minute and per day</li><li>Per-campaign pacing with jitter</li><li>Quiet hours in your time zone</li><li>An optional frequency cap</li><li>Automatic campaign pause after repeated failures</li><li>Backoff when OpenWA's own warm-up pacing refuses a send</li></ul> |
 | **Official WhatsApp API** | Besides QR-linked numbers, a business can connect its own number through **Meta's official WhatsApp Cloud API** (WhatsApp numbers → Add number → Official WhatsApp Business API). The connect form sits next to a step-by-step guide (and an optional YouTube video the platform admin sets in Admin → Settings). Campaigns on official numbers send Meta-approved templates with personalized variables; replies, auto-replies and drips work inside WhatsApp's 24-hour window. Replies, delivered/read ticks and failures arrive through a signed webhook (`/webhooks/meta/<business>`). Access tokens and app secrets are stored encrypted and never shown again. Needs `PUBLIC_URL` so Meta can reach the webhook. |
+| **Lead sources** | Automations → Lead sources: a business connects a **Google Sheet**, a **Wix** form or **any website form** itself. Each source gets a private lead link. It shows setup steps for that kind of source (a ready-to-paste Apps Script for Sheets), a "waiting for your first lead" state and a log of every lead received. Each new lead becomes a contact (tags, opt-in), can start a welcome drip, and can notify the owner on WhatsApp. Links are random 32-character tokens, rate limited, and can be reset at any time. |
+| **Button click tracking** | On official numbers, taps on a template's URL button are counted per recipient, like text links. In Meta, set the button URL to `https://<your domain>/t/<business id>/r/{{1}}` (type: Dynamic); the template picker shows the exact value. |
+| **Health alerts** | The platform admin gets a WhatsApp message when a number disconnects, a campaign pauses itself, a renewal is due, a backup fails, the gateway is down, or the server runs low on memory or disk. Set it up in Admin → Settings; the admin overview lists current problems. |
 | **Integrations** | A REST API with `X-API-Key`, e.g. to add leads from a website form, a CRM or n8n. |
 
 ## How it fits together
@@ -182,9 +185,55 @@ You need a Linux VPS (Ubuntu 22.04+ works well) and a domain or subdomain, e.g. 
 
    Caddy gets an HTTPS certificate automatically. Open `https://app.yourbrand.com` and sign in.
 
-7. **Back up** the `wa-reach-data` and `openwa-data` Docker volumes daily. The first holds every business's data. The second holds the WhatsApp logins, so without it every number has to scan its QR code again.
+7. **Back up daily** to Google Drive. See [Daily backups](#daily-backups).
 
 To update later: `git pull`, then run the same `docker compose … up -d --build` command.
+
+### Daily backups
+
+`deploy/backup.sh` takes a consistent snapshot of every business's database and media while the app keeps running. It then packs the snapshot with a copy of `.env`, optionally encrypts it, and uploads it to Google Drive with [rclone](https://rclone.org). Old uploads are deleted after 14 days, and the server keeps the last 3. The admin overview shows the last backup, and a failed or missed backup triggers a health alert.
+
+One-time setup on the server:
+
+1. **Install rclone.** `curl https://rclone.org/install.sh | sudo bash`
+2. **Connect Google Drive.** Run `rclone config` and answer:
+   - `n` (new remote), name `gdrive`, storage `drive`
+   - leave client id and secret empty, scope `1` (full access)
+   - leave the rest as default; when asked "Use auto config?" answer `n`
+3. **Authorize it from your own computer.** A server has no browser, so:
+   - Install rclone on your PC ([downloads](https://rclone.org/downloads/)).
+   - Run the `rclone authorize "drive" "…"` command the server prints.
+   - Sign in to Google in the browser that opens.
+   - Paste the token it prints back into the server prompt.
+   - Answer `n` to "team drive", then `y` to confirm and `q` to quit.
+4. **(Recommended) Encrypt backups.** Add `BACKUP_PASSPHRASE=<a long random phrase>` to `.env` and store the phrase somewhere safe, e.g. a password manager. Without it a backup cannot be opened.
+5. **Test it.** `bash deploy/backup.sh`. A `WA-Reach-backups` folder appears in your Drive.
+6. **Schedule it** for 02:30 every night:
+
+   ```bash
+   (crontab -l 2>/dev/null; echo "30 2 * * * cd $PWD && bash deploy/backup.sh >> backup.log 2>&1") | crontab -
+   ```
+
+Optional `.env` settings:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `BACKUP_REMOTE` | `gdrive:WA-Reach-backups` | The rclone remote and folder to upload to. |
+| `BACKUP_KEEP_DAYS` | `14` | Uploads older than this are deleted. |
+| `BACKUP_WHATSAPP_SESSIONS` | `no` | Set to `yes` to include WhatsApp logins, so numbers don't need their QR code scanned again after a restore. Much larger. |
+
+**Restore** (e.g. onto a new server with the same `docker compose` setup):
+
+```bash
+rclone copy gdrive:WA-Reach-backups/wa-reach-<date>.tar.gz.enc .
+openssl enc -d -aes-256-cbc -pbkdf2 -in wa-reach-<date>.tar.gz.enc -out restore.tar.gz   # asks for the passphrase
+tar xzf restore.tar.gz            # creates a folder named after the date, e.g. 20260928-023000/
+docker compose -f docker-compose.yml -f docker-compose.prod.yml stop wa-reach
+docker run --rm -v wa-reach_wa-reach-data:/to -v "$PWD/<date>/data":/from alpine sh -c 'cp -a /from/. /to/'
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+```
+
+Use the `env.txt` inside the backup as your `.env` on a new server. The app secret that unlocks saved Meta access tokens is restored with the data folder, or comes from `APP_SECRET` in `.env` if you set one. Skip the `openssl` line for backups without a passphrase.
 
 ### Run without Docker
 

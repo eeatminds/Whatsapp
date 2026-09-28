@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { get, patch, post, useApi, errorMessage, type MetaTemplate, type OfficialSetup, type Session, type TemplateChoice } from '../api';
+import { get, patch, post, useApi, errorMessage, type MetaTemplate, type OfficialSetup, type Session, type SystemInfo, type TemplateChoice } from '../api';
 import { Badge, Button, Callout, ErrorNote, Field, Loading, Modal } from './ui';
 import { IconCopy } from './icons';
 import { AttachedMedia, MediaPicker } from './media';
@@ -354,6 +354,8 @@ export function TemplatePicker({ sessionId, value, onChange }: { sessionId: stri
   const { data, error, loading, setData } = useApi<{ items: MetaTemplate[] }>(`/api/official/numbers/${sessionId}/templates`);
   const [picking, setPicking] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const { data: system } = useApi<SystemInfo>('/api/system');
+  const trackingPrefix = system?.publicUrl ? `${system.publicUrl}/r/` : null;
   const templates = data?.items ?? [];
   const usable = templates.filter(t => t.status === 'APPROVED' && t.supported);
   const current = templates.find(t => t.name === value?.name && t.language === value?.language) ?? null;
@@ -430,16 +432,22 @@ export function TemplatePicker({ sessionId, value, onChange }: { sessionId: stri
             </Field>
           )}
           {current.slots.map(slot => (
-            <Field key={slot.key} label={slot.label} hint={slot.hint}>
+            <Field key={slot.key} label={slot.tracked ? `${slot.label} (taps tracked)` : slot.label} hint={slot.hint}>
               <input
                 className="input"
                 value={value.params[slot.key] ?? ''}
                 onChange={e => onChange({ ...value, params: { ...value.params, [slot.key]: e.target.value } })}
-                placeholder={slot.key.startsWith('body:') ? '{{first_name|there}}' : ''}
+                placeholder={slot.tracked ? 'https://your-website.com/page' : slot.key.startsWith('body:') ? '{{first_name|there}}' : ''}
               />
             </Field>
           ))}
         </>
+      )}
+      {current && trackingPrefix && current.buttons.some(b => b.type === 'URL' && !(b.url ?? '').startsWith(trackingPrefix)) && (
+        <p className="hint">
+          Want to count taps on a link button? In WhatsApp Manager set the button's URL type to <strong>Dynamic</strong> and its URL to{' '}
+          <code>{trackingPrefix}{'{{1}}'}</code>, then sync. You then enter the real destination here and every tap shows in the report.
+        </p>
       )}
       {picking && value && (
         <MediaPicker

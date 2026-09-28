@@ -63,6 +63,7 @@ export async function createTestEnv(options: { publicUrl?: string | null; now?: 
     openwa: { url: fake.url, apiKey: fake.apiKey, webhookSecret: 'whsec_test_secret_0123456789' },
     webhookUrl: 'http://wa-reach.test/webhooks/openwa',
     metaWebhookUrl: options.publicUrl === null ? null : `${options.publicUrl ?? 'https://reach.example.com'}/webhooks/meta`,
+    leadHookUrl: options.publicUrl === null ? null : `${options.publicUrl ?? 'https://reach.example.com'}/hooks/leads`,
     publicUrl: options.publicUrl === undefined ? 'https://reach.example.com' : options.publicUrl,
     adminEmail: 'admin@example.com',
     adminPassword: 'correct-horse-battery',

@@ -1485,3 +1485,23 @@ table.table {
 .success-text {
   color: var(--brand-text);
 }
+
+/* ---------------------------------------------------------------- lead sources */
+
+.lead-sources { display: flex; flex-direction: column; gap: 10px; }
+.lead-source { display: flex; align-items: center; gap: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); flex-wrap: wrap; }
+.grow { flex: 1 1 260px; min-width: 0; }
+.setup-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; color: var(--text-2); font-size: 14px; line-height: 1.5; }
+.setup-steps code, .code-block pre { font-family: var(--mono); }
+.code-block { position: relative; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.code-block .btn { position: absolute; top: 8px; right: 8px; }
+.code-block pre { margin: 0; padding: 14px 16px; font-size: 12px; line-height: 1.5; overflow: auto; max-height: 280px; white-space: pre; }
+.lead-log { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.lead-log-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; flex-wrap: wrap; }
+.lead-log-row + .lead-log-row { border-top: 1px solid var(--border); }
+
+/* Admin health */
+.health-list { list-style: none; margin: 0; padding: 0; }
+.health-list li { display: flex; align-items: flex-start; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--border); }
+.health-list li:first-child { border-top: none; }
+.health-list li .badge { flex-shrink: 0; margin-top: 2px; }

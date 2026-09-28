@@ -636,9 +636,21 @@ export class CampaignsService {
 
   // ---------------------------------------------------------------- rendering + links
 
+  /** Destinations of template link buttons that route through click tracking, per slot. */
+  private trackedButtons(sessionId: string | null, variant: Variant): Array<{ key: string; url: string }> {
+    if (!sessionId || !variant.template || !this.official?.isOfficial(sessionId)) return [];
+    return this.official
+      .trackedSlots(sessionId, variant.template)
+      .map(key => ({ key, url: (variant.template!.params[key] ?? '').trim() }))
+      .filter(b => /^https?:\/\/\S+$/i.test(b.url));
+  }
+
   private createLinks(campaignId: number, variants: Variant[], options: CampaignOptions): void {
-    if (!options.trackLinks || !this.core.config.publicUrl) return;
-    const urls = new Set(variants.flatMap(v => extractUrls(v.body)));
+    if (!this.core.config.publicUrl) return;
+    const sessionId = this.row(campaignId).session_id;
+    const urls = new Set(variants.flatMap(v => this.trackedButtons(sessionId, v).map(b => b.url)));
+    // Button links always need a redirect (the template's URL points at it); text links only when tracking is on.
+    if (options.trackLinks) for (const url of variants.flatMap(v => extractUrls(v.body))) urls.add(url);
     for (const url of urls) {
       const exists = this.core.db.get('SELECT 1 FROM links WHERE campaign_id = ? AND url = ?', campaignId, url);
       if (exists) continue;
@@ -704,10 +716,24 @@ export class CampaignsService {
   }
 
   /** Personalized values for a template's variables, e.g. "{{first_name|there}}" → "Asha". */
-  templateValues(variant: Variant, contact: ContactRow): (key: string) => string {
+  templateValues(variant: Variant, contact: ContactRow, campaign?: Campaign, token?: string | null): (key: string) => string {
     const vars = contactVariables(toContact(contact), { business_name: this.settings.get().businessName });
     const params = variant.template?.params ?? {};
-    return key => renderTemplate(params[key] ?? '', vars).text;
+    // A tracked link button gets "<code>/<recipient token>" appended to the redirect in its Meta URL.
+    const tracked = new Map<string, string>();
+    const buttons = campaign ? this.trackedButtons(campaign.sessionId, variant) : [];
+    if (campaign && buttons.length) {
+      let links = this.links(campaign.id);
+      if (buttons.some(b => !links.has(b.url))) {
+        this.createLinks(campaign.id, [variant], campaign.options);
+        links = this.links(campaign.id);
+      }
+      for (const button of buttons) {
+        const code = links.get(button.url);
+        if (code) tracked.set(button.key, token ? `${code}/${token}` : code);
+      }
+    }
+    return key => tracked.get(key) ?? renderTemplate(params[key] ?? '', vars).text;
   }
 
   variantFor(campaign: Campaign, key: string): Variant {
@@ -739,7 +765,7 @@ export class CampaignsService {
     let sent;
     if (this.sender.isOfficial(sessionId)) {
       this.assertSendable({ variants: [variant] }, sessionId);
-      sent = await this.sender.sendTemplate(sessionId, chatId, variant.template!, this.templateValues(variant, contact));
+      sent = await this.sender.sendTemplate(sessionId, chatId, variant.template!, this.templateValues(variant, contact, { ...campaign, sessionId }, null));
       text = sent.text;
       mediaId = variant.template!.headerMediaId ?? null;
     } else {

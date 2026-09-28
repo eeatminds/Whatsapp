@@ -35,6 +35,11 @@ export class Sender {
     return !!this.official?.isOfficial(sessionId);
   }
 
+  /** Whether free-form messages to this chat are allowed right now (always true for QR numbers). */
+  canSendFreeForm(sessionId: string, chatId: string): boolean {
+    return !this.official?.isOfficial(sessionId) || !!this.official.windowOpenUntil(sessionId, chatId);
+  }
+
   /** Send a Meta-approved template (official numbers only). */
   sendTemplate(sessionId: string, chatId: string, choice: TemplateChoice, value: (key: string) => string): Promise<SentMessage & { text: string }> {
     if (!this.official?.isOfficial(sessionId)) throw new HttpError(400, 'Meta templates can only be sent from an official WhatsApp number');

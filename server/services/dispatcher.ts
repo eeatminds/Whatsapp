@@ -335,7 +335,7 @@ export class Dispatcher {
         return 'skipped';
       }
       mediaId = choice.headerMediaId ?? null;
-      const values = this.deps.campaigns.templateValues(variant, contact);
+      const values = this.deps.campaigns.templateValues(variant, contact, campaign, recipient.token);
       send = () => this.deps.sender.sendTemplate(sessionId, chatId, choice, values);
     } else {
       try {
@@ -476,9 +476,26 @@ export class Dispatcher {
       return 'skipped';
     }
     const chatId = contact.wa_chat_id ?? chatIdFor(contact.phone);
-    const text = sequences.render(sequence, step, contact);
+    let text = '';
+    let mediaId = step.mediaId ?? null;
+    const hasFreeForm = step.body.trim() !== '' || !!step.mediaId;
+    // On an official number, free text is free inside the 24-hour window; outside it (or when the step
+    // is template-only) the approved template goes out instead.
+    const useTemplate =
+      !!step.template && this.deps.sender.isOfficial(sessionId) && (!hasFreeForm || !this.deps.sender.canSendFreeForm(sessionId, chatId));
+    if (!useTemplate && !hasFreeForm) {
+      sequences.stopEnrollment(enrollment.id, 'This step only has a Meta template, which needs an official WhatsApp number');
+      return 'failed';
+    }
+    if (!useTemplate) text = sequences.render(sequence, step, contact);
     try {
-      const sent = await this.deps.sender.send(sessionId, chatId, { text, mediaId: step.mediaId });
+      const sent: SentMessage & { text?: string } = useTemplate
+        ? await this.deps.sender.sendTemplate(sessionId, chatId, step.template!, sequences.templateValues(step, contact))
+        : await this.deps.sender.send(sessionId, chatId, { text, mediaId: step.mediaId });
+      if (useTemplate) {
+        text = sent.text ?? '';
+        mediaId = step.template!.headerMediaId ?? null;
+      }
       this.core.db.tx(() => {
         this.deps.messages.recordOutbound({
           contactId: contact.id,
@@ -486,7 +503,7 @@ export class Dispatcher {
           chatId,
           waMessageId: sent.messageId,
           body: sent.followUp ? null : text,
-          mediaId: step.mediaId,
+          mediaId,
           type: sent.type,
           sourceType: 'sequence',
           sourceId: enrollment.id,

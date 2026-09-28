@@ -17,6 +17,7 @@ import { InboundService } from './inbound.js';
 import { Dispatcher } from './dispatcher.js';
 import { AnalyticsService } from './analytics.js';
 import { OfficialNumbersService } from './official.js';
+import { LeadsService } from './leads.js';
 
 export function createServices(core: Core, options: { random?: () => number; scope?: SessionScope } = {}) {
   const bus = new Bus();
@@ -42,6 +43,7 @@ export function createServices(core: Core, options: { random?: () => number; sco
     options.random,
   );
   const analytics = new AnalyticsService(core, settings, contacts, messages);
+  const leads = new LeadsService(core, settings, contacts, tags, sequences, outbox);
   return {
     bus,
     settings,
@@ -61,6 +63,7 @@ export function createServices(core: Core, options: { random?: () => number; sco
     inbound,
     dispatcher,
     analytics,
+    leads,
   };
 }
 

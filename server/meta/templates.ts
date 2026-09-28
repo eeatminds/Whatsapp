@@ -13,6 +13,11 @@ export interface TemplateSlot {
   label: string;
   /** Where the value appears, for the editor's help text. */
   hint: string;
+  /**
+   * A link button whose Meta URL points at this server's redirect (".../r/{{1}}"): the business
+   * enters the real destination and each tap is counted like a tracked link in the message text.
+   */
+  tracked?: boolean;
 }
 
 export interface TemplateButton {

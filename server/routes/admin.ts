@@ -109,6 +109,13 @@ export async function registerAdminRoutes(app: FastifyInstance, platform: Platfo
     return { ok: true };
   });
 
+  app.get('/health', async () => ({ issues: await platform.health.issues(), backup: platform.health.backupStatus() }));
+  app.post('/health/test-alert', async () => {
+    const result = platform.health.sendAlert(`${platform.settings().brandName}: test alert. Health alerts will arrive on this number.`);
+    if (!result.ok) throw badRequest(result.error);
+    return result;
+  });
+
   app.get('/payments', async () => platform.payments({ limit: 500 }));
 
   app.get('/settings', async () => platform.settings());

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import type { AppConfig } from '../config.js';
+import { HealthMonitor } from './health.js';
 import type { Core, Logger } from '../context.js';
 import { openDatabase, nowIso, parseJson, type Db } from '../db/database.js';
 import { badRequest, conflict, HttpError, notFound } from '../lib/errors.js';
@@ -100,6 +101,13 @@ export const platformSettingsSchema = z.object({
     .trim()
     .max(300)
     .refine(v => v === '' || /^https:\/\/[^\s"'<>]+$/.test(v), 'Use a full https:// link'),
+  /** The admin's WhatsApp number for health alerts ('' = off), sent from alertTenantId's default number. */
+  alertPhone: z
+    .string()
+    .trim()
+    .max(20)
+    .refine(v => v === '' || /^\+?[\d\s-]{8,20}$/.test(v), 'Enter a phone number with country code'),
+  alertTenantId: z.string().trim().max(64),
 });
 export type PlatformSettings = z.infer<typeof platformSettingsSchema>;
 
@@ -114,6 +122,8 @@ const DEFAULT_SETTINGS: PlatformSettings = {
   defaultDailyCap: 250,
   defaultPerMinuteCap: 10,
   metaGuideVideoUrl: '',
+  alertPhone: '',
+  alertTenantId: '',
 };
 
 /** Sending limits only the platform admin may change (per business). */
@@ -235,6 +245,7 @@ export class Platform {
   private gatewayCache: { at: number; sessions: OpenWASession[] } | null = null;
   private gatewayFetch: Promise<OpenWASession[]> | null = null;
   private supervisor: NodeJS.Timeout | null = null;
+  readonly health: HealthMonitor;
 
   constructor(options: PlatformOptions) {
     this.config = options.config;
@@ -246,6 +257,7 @@ export class Platform {
     this.starterKit = options.starterKit ?? true;
     const inMemory = options.config.dbPath === ':memory:';
     this.db = options.db ?? openDatabase(inMemory ? ':memory:' : join(options.config.dataDir, 'platform.sqlite'), PLATFORM_MIGRATIONS);
+    this.health = new HealthMonitor(this, this.log);
   }
 
   private now(): string {
@@ -602,6 +614,7 @@ export class Platform {
       mediaDir,
       webhookUrl: `${this.config.webhookUrl}/${tenant}`,
       metaWebhookUrl: this.config.metaWebhookUrl ? `${this.config.metaWebhookUrl}/${tenant}` : null,
+      leadHookUrl: this.config.leadHookUrl ? `${this.config.leadHookUrl}/${tenant}` : null,
       publicUrl: this.config.publicUrl ? `${this.config.publicUrl}/t/${tenant}` : null,
       apiKey: null,
     };
@@ -660,11 +673,13 @@ export class Platform {
     this.supervisor = setInterval(() => this.reconcile(), 60_000);
     this.supervisor.unref?.();
     this.reconcile();
+    this.health.start();
   }
 
   async stop(): Promise<void> {
     if (this.supervisor) clearInterval(this.supervisor);
     this.supervisor = null;
+    await this.health.stop();
     for (const runtime of this.runtimes.values()) await runtime.services.dispatcher.stop();
   }
 

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, del, patch, post, put, useApi, errorMessage, type Payment, type PlatformSettings, type PlatformUser, type TenantInfo, type TenantStats } from '../api';
+import { api, del, patch, post, put, useApi, errorMessage, type HealthReport, type Payment, type PlatformSettings, type PlatformUser, type TenantInfo, type TenantStats } from '../api';
 import { SendingLimitsForm, type SendingLimits } from '../components/SendingLimits';
 import { Badge, Button, Callout, Card, Drawer, Empty, ErrorNote, Field, Loading, Modal, PageHeader, StatTile, useConfirm, useToast } from '../components/ui';
 import { IconCopy, IconPlus, IconSearch } from '../components/icons';
@@ -131,9 +131,74 @@ export function AdminOverviewPage() {
               )}
             </Card>
           </div>
+          <HealthCard />
         </>
       )}
     </div>
+  );
+}
+
+function HealthCard() {
+  const navigate = useNavigate();
+  const { data, error } = useApi<HealthReport>('/api/admin/health', { poll: 60000 });
+  const backup = data?.backup ?? null;
+  return (
+    <Card
+      title="Health"
+      subtitle="Checked every 5 minutes. Problems lasting 10 minutes are sent to your alert number."
+      actions={
+        <Button size="sm" variant="ghost" onClick={() => navigate('/admin/settings')}>
+          Alert settings
+        </Button>
+      }
+      bodyClass=""
+    >
+      <ErrorNote error={error} />
+      {data && (
+        <ul className="health-list">
+          {data.issues.length === 0 && (
+            <li>
+              <Badge tone="green" dot>
+                OK
+              </Badge>
+              <div>
+                <strong>Everything is running</strong>
+                <div className="muted">Numbers connected, campaigns sending, server has room.</div>
+              </div>
+            </li>
+          )}
+          {data.issues.map(issue => (
+            <li key={issue.key}>
+              <Badge tone={issue.severity === 'critical' ? 'red' : 'amber'} dot>
+                {issue.severity === 'critical' ? 'Critical' : 'Warning'}
+              </Badge>
+              <div className="grow">
+                <strong>{issue.title}</strong>
+                <div className="muted">{issue.detail}</div>
+              </div>
+              {issue.business && (
+                <Button size="sm" variant="ghost" onClick={() => navigate(`/admin/businesses?open=${issue.business!.id}`)}>
+                  Open
+                </Button>
+              )}
+            </li>
+          ))}
+          <li>
+            <Badge tone={!backup ? 'amber' : backup.lastError && (!backup.lastOkAt || (backup.lastRunAt ?? '') > backup.lastOkAt) ? 'red' : 'green'}>Backup</Badge>
+            <div>
+              {backup?.lastOkAt ? (
+                <>
+                  Last backup {relativeTime(backup.lastOkAt)} <span className="muted">({formatDateTime(backup.lastOkAt)})</span>
+                </>
+              ) : (
+                'No backup has run yet'
+              )}
+              {backup?.lastError && <div className="muted">Last error: {backup.lastError}</div>}
+            </div>
+          </li>
+        </ul>
+      )}
+    </Card>
   );
 }
 
@@ -797,16 +862,73 @@ export function AdminPaymentsPage() {
 
 // ---------------------------------------------------------------- settings
 
+function AlertSettingsCard({ value, set, dirty }: { value: PlatformSettings; set: (patch: Partial<PlatformSettings>) => void; dirty: boolean }) {
+  const { data: tenants } = useApi<TenantInfo[]>('/api/admin/tenants');
+  const toast = useToast();
+  const [sending, setSending] = useState(false);
+  return (
+    <Card
+      title="Health alerts on WhatsApp"
+      subtitle="Get a WhatsApp message when a number disconnects, a campaign pauses itself, a renewal is due, backups fail, or the server runs low on memory or disk."
+    >
+      <div className="grid cols-2">
+        <Field label="Your WhatsApp number" hint="With country code, e.g. +91 98450 00000. Leave empty to turn alerts off.">
+          <input className="input" value={value.alertPhone} onChange={e => set({ alertPhone: e.target.value })} placeholder="+91 …" />
+        </Field>
+        <Field label="Send alerts from" hint="Alerts go out from this business's default number. Use your own business, not a client's.">
+          <select className="input" value={value.alertTenantId} onChange={e => set({ alertTenantId: e.target.value })}>
+            <option value="">Choose a business…</option>
+            {(tenants ?? []).map(t => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      <p className="muted" style={{ margin: '4px 0 12px' }}>
+        A QR-linked number works best. If the sender is an official number, message it once a day so Meta keeps the 24-hour window open (otherwise only templates can reach you).
+      </p>
+      <Button
+        size="sm"
+        loading={sending}
+        disabled={!value.alertPhone || !value.alertTenantId}
+        onClick={async () => {
+          if (dirty) {
+            toast.error('Save your settings first');
+            return;
+          }
+          setSending(true);
+          try {
+            await post('/api/admin/health/test-alert');
+            toast.success('Test alert queued. Check your WhatsApp.');
+          } catch (err) {
+            toast.error(errorMessage(err));
+          } finally {
+            setSending(false);
+          }
+        }}
+      >
+        Send test alert
+      </Button>
+    </Card>
+  );
+}
+
 export function AdminSettingsPage() {
   const { reload: reloadSession } = useSession();
   const { data, loading } = useApi<PlatformSettings>('/api/admin/settings');
   const [form, setForm] = useState<PlatformSettings | null>(null);
   const [pw, setPw] = useState({ current: '', next: '' });
+  const [dirty, setDirty] = useState(false);
   const toast = useToast();
   const value = form ?? data;
   if (loading && !data) return <Loading />;
   if (!value) return null;
-  const set = (patchValue: Partial<PlatformSettings>) => setForm({ ...value, ...patchValue });
+  const set = (patchValue: Partial<PlatformSettings>) => {
+    setForm({ ...value, ...patchValue });
+    setDirty(true);
+  };
   return (
     <div className="page">
       <PageHeader
@@ -818,6 +940,7 @@ export function AdminSettingsPage() {
             onClick={async () => {
               try {
                 setForm(await put<PlatformSettings>('/api/admin/settings', value));
+                setDirty(false);
                 await reloadSession();
                 toast.success('Saved');
               } catch (err) {
@@ -872,6 +995,7 @@ export function AdminSettingsPage() {
           <input className="input" value={value.metaGuideVideoUrl} onChange={e => set({ metaGuideVideoUrl: e.target.value })} placeholder="https://www.youtube.com/watch?v=…" />
         </Field>
       </Card>
+      <AlertSettingsCard value={value} set={set} dirty={dirty} />
       <Card title="Your password">
         <form
           className="grid cols-3"

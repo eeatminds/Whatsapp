@@ -136,6 +136,21 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   app.post('/official/numbers/:id/sync-templates', async request => ({ items: await s.official.syncTemplates(params(sessionParam, request).id) }));
   app.get('/official/numbers/:id/templates', async request => ({ items: s.official.templates(params(sessionParam, request).id) }));
 
+  // ---------------------------------------------------------------- lead sources (Google Sheets, website forms, Wix...)
+
+  app.get('/lead-sources', async () => ({ items: s.leads.list(), available: !!core.config.leadHookUrl }));
+  app.post('/lead-sources', async (request, reply) => reply.status(201).send(s.leads.create(request.body)));
+  app.get('/lead-sources/:id', async request => {
+    const { id } = params(idParam, request);
+    return { source: s.leads.get(id), events: s.leads.events(id) };
+  });
+  app.patch('/lead-sources/:id', async request => s.leads.update(params(idParam, request).id, request.body));
+  app.post('/lead-sources/:id/reset-link', async request => s.leads.resetLink(params(idParam, request).id));
+  app.delete('/lead-sources/:id', async request => {
+    s.leads.delete(params(idParam, request).id);
+    return { ok: true };
+  });
+
   // ---------------------------------------------------------------- contacts
 
   app.get('/contacts', async request => {

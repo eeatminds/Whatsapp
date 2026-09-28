@@ -5,3 +5,5 @@ data/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+backups/
+*.log

@@ -9,6 +9,7 @@ import type { TagsService } from './tags.js';
 import type { Bus } from './bus.js';
 import type { ContactRow } from './contacts.js';
 import { toContact } from './contacts.js';
+import { templateChoiceSchema } from './official.js';
 
 const id = z.coerce.number().int().positive();
 
@@ -18,8 +19,13 @@ export const stepSchema = z
     delayMinutes: z.coerce.number().int().min(0).max(60 * 24 * 365),
     body: z.string().max(4000).default(''),
     mediaId: id.nullish(),
+    /**
+     * A Meta-approved template for official numbers. Used when the 24-hour window is closed (or the
+     * step has no text), so a follow-up can reach someone who hasn't written back.
+     */
+    template: templateChoiceSchema.nullish(),
   })
-  .refine(s => s.body.trim() !== '' || !!s.mediaId, 'Each step needs text, media, or both');
+  .refine(s => s.body.trim() !== '' || !!s.mediaId || !!s.template, 'Each step needs text, media, or a template');
 
 export const triggerSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('manual') }),
@@ -375,6 +381,13 @@ export class SequencesService {
 
   release(enrollmentId: number): void {
     this.core.db.run("UPDATE sequence_enrollments SET status = 'active', updated_at = ? WHERE id = ? AND status = 'sending'", this.now(), enrollmentId);
+  }
+
+  /** Personalized values for a step's template variables. */
+  templateValues(step: Step, contact: ContactRow): (key: string) => string {
+    const vars = contactVariables(toContact(contact), { business_name: this.settings.get().businessName });
+    const params = step.template?.params ?? {};
+    return key => renderTemplate(params[key] ?? '', vars).text;
   }
 
   render(sequence: Sequence, step: Step, contact: ContactRow): string {

@@ -60,7 +60,8 @@ describe('inbound privacy and noise', () => {
   });
 
   it('cleans up notices and the contacts created from them on upgrade', () => {
-    const db = openDatabase(':memory:', MIGRATIONS.slice(0, MIGRATIONS.length - 1));
+    // Every migration before the clean-up (migration 5).
+    const db = openDatabase(':memory:', MIGRATIONS.slice(0, 4));
     const at = '2026-09-27T05:00:00.000Z';
     const contact = (phone: string, source: string) =>
       db.run("INSERT INTO contacts (phone, source, last_inbound_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", phone, source, at, at, at).lastInsertRowid;

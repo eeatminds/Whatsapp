@@ -21,6 +21,8 @@ export interface AppConfig {
   webhookUrl: string;
   /** Public URL Meta posts official Cloud API events to (needs PUBLIC_URL); null when not reachable. */
   metaWebhookUrl: string | null;
+  /** Public base for lead-source links (needs PUBLIC_URL); null when not reachable. */
+  leadHookUrl: string | null;
   /** Public base URL of this app. Needed for click-tracked links; null disables tracking. */
   publicUrl: string | null;
   /** First platform admin, created on first boot. */
@@ -112,6 +114,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     webhookUrl,
     metaWebhookUrl: publicUrl ? `${publicUrl}/webhooks/meta` : null,
+    leadHookUrl: publicUrl ? `${publicUrl}/hooks/leads` : null,
     publicUrl,
     adminEmail: (env.ADMIN_EMAIL ?? 'admin@example.com').trim().toLowerCase(),
     adminPassword,

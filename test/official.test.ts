@@ -239,3 +239,78 @@ describe('official WhatsApp numbers (Meta Cloud API)', () => {
     expect(qr.status).toBe(400);
   });
 });
+
+describe('official numbers: drips and tracked buttons', () => {
+  it('sends the drip step as free text inside the 24-hour window and as a template outside it', async () => {
+    await connect();
+    const contact = (await env.api('POST', '/api/contacts', { phone: '+919876500001', name: 'Asha Rao' })).body.contact;
+    const sequence = await env.api('POST', '/api/sequences', {
+      name: 'Follow up',
+      sessionId: NUMBER,
+      options: { respectQuietHours: false, appendOptOut: false },
+      steps: [
+        {
+          delayMinutes: 0,
+          body: 'Hi {{first_name}}, any questions?',
+          template: { name: 'diwali_offer', language: 'en', params: { 'body:1': '{{first_name|there}}', 'body:2': '10%', 'button:0:1': 'follow-up' } },
+        },
+      ],
+    });
+    expect(sequence.status).toBe(201);
+
+    // No message from the customer yet: only the template may start the conversation.
+    await env.api('POST', `/api/sequences/${sequence.body.id}/enroll`, { contactIds: [contact.id] });
+    await env.run(3, 2000);
+    expect(env.meta.sent.at(-1)!.message).toMatchObject({ type: 'template', to: '919876500001' });
+
+    // After they write in, the next run of the same step goes out as plain text (free for the business).
+    await customerSays('919876500001', 'Tell me more');
+    await env.api('POST', `/api/sequences/${sequence.body.id}/enroll`, { contactIds: [contact.id] });
+    const before = env.meta.sent.length;
+    await env.run(3, 2000);
+    expect(env.meta.sent.length).toBeGreaterThan(before);
+    expect(env.meta.sent.at(-1)!.message).toMatchObject({ type: 'text', text: { body: 'Hi Asha, any questions?' } });
+  });
+
+  it('counts taps on a link button that points at the tracking redirect', async () => {
+    const prefix = `https://reach.example.com/t/${env.tenantId}/r/`;
+    env.meta.templatesByWaba.get(WABA)!.push({
+      id: 't3',
+      name: 'course_enquiry',
+      language: 'en',
+      status: 'APPROVED',
+      category: 'MARKETING',
+      components: [
+        { type: 'BODY', text: 'Hi {{1}}, MBA admissions are open.' },
+        { type: 'BUTTONS', buttons: [{ type: 'PHONE_NUMBER', text: 'Call us', phone_number: '+918147286667' }, { type: 'URL', text: 'Enquiry link', url: `${prefix}{{1}}` }] },
+      ],
+    });
+    await connect();
+    const templates = await env.api('GET', `/api/official/numbers/${NUMBER}/templates`);
+    const shape = templates.body.items.find((t: { name: string }) => t.name === 'course_enquiry');
+    expect(shape.slots.find((s: { key: string }) => s.key === 'button:1:1')).toMatchObject({ tracked: true });
+
+    await env.api('POST', '/api/contacts', { phone: '+919876500001', name: 'Asha Rao' });
+    const campaign = await env.api('POST', '/api/campaigns', {
+      name: 'Admissions',
+      sessionId: NUMBER,
+      audience: { type: 'all' },
+      variants: [{ key: 'A', template: { name: 'course_enquiry', language: 'en', params: { 'body:1': '{{first_name}}', 'button:1:1': 'https://college.example/enquire' } } }],
+    });
+    expect((await env.api('POST', `/api/campaigns/${campaign.body.id}/launch`, {})).status).toBe(200);
+    await env.run(5, 2000);
+
+    const sent = env.meta.sent.find(s => s.message.template?.name === 'course_enquiry')!.message;
+    const button = sent.template.components.find((c: { type: string }) => c.type === 'button');
+    expect(button).toMatchObject({ sub_type: 'url', index: '1' });
+    const suffix = button.parameters[0].text as string;
+    expect(suffix).toMatch(/^[A-Za-z0-9]{7}\/[a-f0-9]{16}$/);
+
+    const tap = await env.app.inject({ method: 'GET', url: `/t/${env.tenantId}/r/${suffix}`, headers: { 'user-agent': 'Mozilla/5.0 (Linux; Android 14)' } });
+    expect(tap.statusCode).toBe(302);
+    expect(tap.headers.location).toBe('https://college.example/enquire');
+    const report = await env.api('GET', `/api/campaigns/${campaign.body.id}/report`);
+    expect(report.body.campaign.stats.clicked).toBe(1);
+    expect(report.body.links[0]).toMatchObject({ url: 'https://college.example/enquire', clicks: 1 });
+  });
+});

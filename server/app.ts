@@ -350,6 +350,55 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
     });
   });
 
+  // ---------------------------------------------------------------- lead links (public; the secret token is the credential)
+
+  const leadHits = new Map<string, { count: number; resetAt: number }>();
+  const leadRateOk = (key: string): boolean => {
+    const now = Date.now();
+    if (leadHits.size > 10_000) for (const [k, v] of leadHits) if (v.resetAt < now) leadHits.delete(k);
+    const entry = leadHits.get(key);
+    if (!entry || entry.resetAt < now) {
+      leadHits.set(key, { count: 1, resetAt: now + 60_000 });
+      return true;
+    }
+    return ++entry.count <= 120;
+  };
+
+  await app.register(async scope => {
+    // Plain HTML forms post url-encoded fields; Apps Script and Wix post JSON (sometimes as text/plain).
+    scope.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string', bodyLimit: 64 * 1024 }, (_req, body, done) => {
+      done(null, Object.fromEntries(new URLSearchParams(String(body))));
+    });
+    scope.addContentTypeParser('text/plain', { parseAs: 'string', bodyLimit: 64 * 1024 }, (_req, body, done) => {
+      try {
+        done(null, JSON.parse(String(body)));
+      } catch {
+        done(null, Object.fromEntries(new URLSearchParams(String(body))));
+      }
+    });
+    // Website forms post from another domain; the link carries no cookies, so any origin may call it.
+    const cors = (reply: FastifyReply) =>
+      reply.header('Access-Control-Allow-Origin', '*').header('Access-Control-Allow-Methods', 'POST, OPTIONS').header('Access-Control-Allow-Headers', 'Content-Type');
+    scope.options('/hooks/leads/:tenantId/:token', async (_request, reply) => cors(reply).status(204).send());
+    scope.post('/hooks/leads/:tenantId/:token', { bodyLimit: 64 * 1024 }, async (request, reply) => {
+      cors(reply);
+      const { tenantId, token } = request.params as { tenantId: string; token: string };
+      const runtime = metaRuntime(tenantId);
+      const source = runtime?.services.leads.byToken(token);
+      if (!runtime || !source) return reply.status(404).send({ ok: false, error: 'Unknown lead link' });
+      if (!source.active) return reply.status(403).send({ ok: false, error: 'This lead link is switched off' });
+      if (!leadRateOk(`${tenantId}:${source.id}`)) return reply.status(429).send({ ok: false, error: 'Too many leads at once; try again in a minute' });
+      const result = runtime.services.leads.receive(source, request.body ?? {});
+      if (!result.ok) return reply.status(422).send({ ok: false, error: result.error });
+      // Send the welcome message now rather than on the next tick, when the business may send.
+      if (platform.canSend(tenantId)) void runtime.services.dispatcher.tick().catch(() => undefined);
+      if (source.thankYouUrl && String(request.headers['content-type'] ?? '').includes('x-www-form-urlencoded')) {
+        return reply.redirect(source.thankYouUrl, 303);
+      }
+      return { ok: true, created: result.created };
+    });
+  });
+
   // ---------------------------------------------------------------- click tracking
 
   const redirect = async (request: FastifyRequest<{ Params: { tenantId: string; code: string; token?: string } }>, reply: FastifyReply) => {

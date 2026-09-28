@@ -1,10 +1,12 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { del, patch, post, useApi, errorMessage, type AutoReply, type Sequence, type Step, type Tag } from '../api';
+import { Link, useSearchParams } from 'react-router-dom';
+import { LeadSourcesTab } from './LeadSources';
+import { del, patch, post, useApi, errorMessage, type AutoReply, type Sequence, type Settings, type Step, type Tag } from '../api';
 import { Badge, Button, Callout, Card, Empty, ErrorNote, Field, Loading, Modal, PageHeader, Pagination, Tabs, TagChip, Toggle, useConfirm, useToast } from '../components/ui';
 import { IconPlus, IconTrash } from '../components/icons';
 import { Composer, MessagePreview, WhatsAppText } from '../components/composer';
-import { SessionSelect, TagPicker, useTags } from '../components/pickers';
+import { SessionSelect, TagPicker, useSessions, useTags } from '../components/pickers';
+import { TemplatePicker } from '../components/official';
 import { formatDuration, formatNumber, formatPhone, relativeTime, formatDateTime } from '../format';
 
 const MATCH_LABEL: Record<AutoReply['matchType'], string> = {
@@ -320,8 +322,16 @@ function splitDelay(minutes: number): { value: number; unit: DelayUnit } {
   return { value: minutes, unit: 'minutes' };
 }
 
-function StepEditor({ step, index, onChange, onRemove }: { step: Step; index: number; onChange: (s: Step) => void; onRemove?: () => void }) {
+function StepEditor({ step, index, onChange, onRemove, officialSessionId }: {
+  step: Step;
+  index: number;
+  onChange: (s: Step) => void;
+  onRemove?: () => void;
+  /** Set when the sequence sends from an official (Meta) number. */
+  officialSessionId?: string | null;
+}) {
   const delay = splitDelay(step.delayMinutes);
+  const [useTemplate, setUseTemplate] = useState(!!step.template);
   return (
     <>
       <div className="step-connector">
@@ -350,6 +360,24 @@ function StepEditor({ step, index, onChange, onRemove }: { step: Step; index: nu
         </div>
         <div className="card-body">
           <Composer body={step.body} mediaId={step.mediaId} onChange={m => onChange({ ...step, body: m.body, mediaId: m.mediaId })} rows={4} />
+          {officialSessionId && (
+            <div className="stack" style={{ marginTop: 12 }}>
+              <Toggle
+                checked={useTemplate}
+                onChange={on => {
+                  setUseTemplate(on);
+                  if (!on) onChange({ ...step, template: null });
+                }}
+                label="Approved template for people who haven't messaged in 24 hours"
+                description={
+                  step.body.trim() || step.mediaId
+                    ? 'Official numbers can only send the message above within 24 hours of the customer\'s last message. Outside that window this template goes out instead.'
+                    : 'Leave the message above empty to always send this template.'
+                }
+              />
+              {useTemplate && <TemplatePicker sessionId={officialSessionId} value={step.template} onChange={template => onChange({ ...step, template })} />}
+            </div>
+          )}
         </div>
       </div>
     </>
@@ -366,6 +394,10 @@ function SequenceEditor({ sequence, onClose, onSaved }: { sequence: Sequence | n
     options: sequence?.options ?? { stopOnReply: true, respectQuietHours: true, requireOptIn: false, appendOptOut: true },
   });
   const { data: tags } = useTags();
+  const { data: numbers } = useSessions();
+  const { data: settings } = useApi<Settings>('/api/settings');
+  const sendingFrom = form.sessionId ?? settings?.defaultSessionId ?? null;
+  const officialSessionId = numbers?.items.find(n => n.id === sendingFrom)?.channel === 'official' ? sendingFrom : null;
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const total = form.steps.reduce((sum, s) => sum + s.delayMinutes, 0);
@@ -394,7 +426,7 @@ function SequenceEditor({ sequence, onClose, onSaved }: { sequence: Sequence | n
             {form.steps.length} messages over {formatDuration(total)}
           </span>
           <Button onClick={onClose}>Cancel</Button>
-          <Button variant="primary" loading={busy} disabled={!form.name.trim() || form.steps.some(s => !s.body.trim() && !s.mediaId)} onClick={save}>
+          <Button variant="primary" loading={busy} disabled={!form.name.trim() || form.steps.some(s => !s.body.trim() && !s.mediaId && !s.template)} onClick={save}>
             Save
           </Button>
         </>
@@ -443,6 +475,7 @@ function SequenceEditor({ sequence, onClose, onSaved }: { sequence: Sequence | n
             index={i}
             onChange={s => setForm({ ...form, steps: form.steps.map((x, j) => (j === i ? s : x)) })}
             onRemove={form.steps.length > 1 ? () => setForm({ ...form, steps: form.steps.filter((_, j) => j !== i) }) : undefined}
+            officialSessionId={officialSessionId}
           />
         ))}
         <div className="step-connector">
@@ -642,7 +675,13 @@ function SequencesTab() {
 }
 
 export function AutomationsPage() {
-  const [tab, setTab] = useState<'replies' | 'sequences'>('replies');
+  const [search, setSearch] = useSearchParams();
+  const initial = search.get('tab');
+  const [tab, setTabState] = useState<'replies' | 'sequences' | 'leads'>(initial === 'leads' || initial === 'sequences' ? initial : 'replies');
+  const setTab = (next: 'replies' | 'sequences' | 'leads') => {
+    setTabState(next);
+    setSearch(next === 'replies' ? {} : { tab: next }, { replace: true });
+  };
   return (
     <div className="page">
       <PageHeader title="Automations" description="Replies and follow-ups that run on their own, around the clock." />
@@ -652,9 +691,10 @@ export function AutomationsPage() {
         tabs={[
           { value: 'replies', label: 'Auto-replies' },
           { value: 'sequences', label: 'Drip sequences' },
+          { value: 'leads', label: 'Leads from forms & sheets' },
         ]}
       />
-      {tab === 'replies' ? <AutoRepliesTab /> : <SequencesTab />}
+      {tab === 'replies' ? <AutoRepliesTab /> : tab === 'sequences' ? <SequencesTab /> : <LeadSourcesTab />}
     </div>
   );
 }
