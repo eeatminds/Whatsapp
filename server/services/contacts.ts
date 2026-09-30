@@ -4,6 +4,7 @@ import type { Core } from '../context.js';
 import { nowIso, parseJson } from '../db/database.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { normalizePhone, spreadsheetPhone } from '../lib/phone.js';
+import { startOfLocalDay } from '../lib/time.js';
 import { parseCsv, toCsv } from '../lib/csv.js';
 import type { SettingsService } from './settings.js';
 import type { TagsService, Tag } from './tags.js';
@@ -12,6 +13,20 @@ import type { Bus } from './bus.js';
 
 export type Consent = 'opted_in' | 'unknown' | 'opted_out';
 export type WaStatus = 'unknown' | 'valid' | 'invalid';
+export const LEAD_STAGES = ['untouched', 'warm', 'cold', 'closed'] as const;
+export type LeadStage = (typeof LEAD_STAGES)[number];
+
+/** Where a contact came from, for the leads report. Lead sources are keyed `src:<id>`. */
+const CHANNEL_NAMES: Record<string, string> = {
+  import: 'CSV import',
+  manual: 'Added manually',
+  inbound: 'Messaged on WhatsApp',
+  'lead-form': 'Lead form',
+  api: 'API',
+};
+function channelName(source: string | null): string {
+  return CHANNEL_NAMES[source ?? ''] ?? (source ? source : 'Other');
+}
 
 export interface ContactRow {
   id: number;
@@ -29,6 +44,12 @@ export interface ContactRow {
   source: string | null;
   last_inbound_at: string | null;
   last_outbound_at: string | null;
+  lead_stage: LeadStage;
+  lead_stage_at: string | null;
+  lead_remark: string | null;
+  lead_remark_by: string | null;
+  lead_remark_at: string | null;
+  lead_source_id: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -49,12 +70,20 @@ export interface Contact {
   source: string | null;
   lastInboundAt: string | null;
   lastOutboundAt: string | null;
+  leadStage: LeadStage;
+  leadStageAt: string | null;
+  leadRemark: string | null;
+  leadRemarkBy: string | null;
+  leadRemarkAt: string | null;
+  /** Where the lead came from: a lead source's name, or e.g. "CSV import". */
+  channel: string;
+  channelKey: string;
   createdAt: string;
   updatedAt: string;
   tags: Tag[];
 }
 
-export function toContact(row: ContactRow, tags: Tag[] = []): Contact {
+export function toContact(row: ContactRow, tags: Tag[] = [], sourceNames: Map<number, string> = new Map()): Contact {
   return {
     id: row.id,
     phone: row.phone,
@@ -71,6 +100,13 @@ export function toContact(row: ContactRow, tags: Tag[] = []): Contact {
     source: row.source,
     lastInboundAt: row.last_inbound_at,
     lastOutboundAt: row.last_outbound_at,
+    leadStage: row.lead_stage ?? 'untouched',
+    leadStageAt: row.lead_stage_at ?? null,
+    leadRemark: row.lead_remark ?? null,
+    leadRemarkBy: row.lead_remark_by ?? null,
+    leadRemarkAt: row.lead_remark_at ?? null,
+    channel: row.lead_source_id ? (sourceNames.get(row.lead_source_id) ?? 'Lead form') : channelName(row.source),
+    channelKey: row.lead_source_id ? `src:${row.lead_source_id}` : (row.source ?? 'other'),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     tags,
@@ -132,6 +168,15 @@ export const contactFilterSchema = z.object({
   consent: consentSchema.optional(),
   waStatus: z.enum(['unknown', 'valid', 'invalid']).optional(),
   segmentId: z.coerce.number().int().positive().optional(),
+  stage: z.enum(LEAD_STAGES).optional(),
+  /** A channel key from the leads report: `src:<lead source id>`, or a source such as `import`. */
+  channel: z
+    .string()
+    .regex(/^(src:\d{1,9}|[a-z-]{1,20})$/)
+    .optional(),
+  /** Added on or after / before these dates (YYYY-MM-DD, in the business's time zone). */
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   ids: z.array(z.coerce.number().int().positive()).max(100_000).optional(),
 });
 
@@ -139,10 +184,18 @@ export type ContactFilter = z.infer<typeof contactFilterSchema>;
 
 export const bulkActionSchema = z.object({
   filter: contactFilterSchema,
-  action: z.enum(['add_tags', 'remove_tags', 'set_consent', 'delete', 'validate']),
+  action: z.enum(['add_tags', 'remove_tags', 'set_consent', 'set_stage', 'delete', 'validate']),
   tagIds: z.array(z.coerce.number().int().positive()).max(50).optional(),
   consent: consentSchema.optional(),
+  stage: z.enum(LEAD_STAGES).optional(),
 });
+
+export const leadUpdateSchema = z
+  .object({
+    stage: z.enum(LEAD_STAGES).optional(),
+    remark: z.string().trim().max(2000).optional(),
+  })
+  .refine(v => v.stage !== undefined || v.remark !== undefined, 'Nothing to change');
 
 export type ImportField = 'phone' | 'name' | 'first_name' | 'last_name' | 'email' | 'tags' | 'ignore' | `attr:${string}`;
 
@@ -156,7 +209,8 @@ export const importSchema = z.object({
     .string()
     .regex(/^[A-Za-z]{2}$/)
     .optional(),
-  updateExisting: z.boolean().default(true),
+  /** Off by default: a number already saved keeps its first details (one number, one lead). */
+  updateExisting: z.boolean().default(false),
 });
 
 export interface ImportResult {
@@ -171,7 +225,20 @@ export interface ImportResult {
 const MAX_IMPORT_ROWS = 100_000;
 
 /** Columns our own export adds that describe WA Reach state, not the person; skipped on re-import. */
-const SYSTEM_COLUMNS = new Set(['consent', 'consent_source', 'whatsapp', 'wa_status', 'source', 'created_at', 'updated_at', 'id']);
+const SYSTEM_COLUMNS = new Set([
+  'consent',
+  'consent_source',
+  'whatsapp',
+  'wa_status',
+  'source',
+  'created_at',
+  'updated_at',
+  'id',
+  'lead_stage',
+  'lead_remark',
+  'lead_remark_by',
+  'channel',
+]);
 
 export function suggestField(header: string): ImportField {
   const h = header.trim().toLowerCase();
@@ -251,6 +318,13 @@ export class ContactsService {
       parts.push({ sql: 'EXISTS (SELECT 1 FROM contact_tags ct WHERE ct.contact_id = c.id AND ct.tag_id = ?)', params: [filter.tagId] });
     }
     if (filter.consent) parts.push({ sql: 'c.consent = ?', params: [filter.consent] });
+    if (filter.stage) parts.push({ sql: 'c.lead_stage = ?', params: [filter.stage] });
+    if (filter.channel) {
+      if (filter.channel.startsWith('src:')) parts.push({ sql: 'c.lead_source_id = ?', params: [Number(filter.channel.slice(4))] });
+      else parts.push({ sql: 'c.lead_source_id IS NULL AND c.source = ?', params: [filter.channel] });
+    }
+    if (filter.from) parts.push({ sql: 'c.created_at >= ?', params: [this.dayStart(filter.from)] });
+    if (filter.to) parts.push({ sql: 'c.created_at < ?', params: [this.dayStart(filter.to, 1)] });
     if (filter.waStatus) parts.push({ sql: 'c.wa_status = ?', params: [filter.waStatus] });
     if (filter.ids) {
       if (filter.ids.length === 0) parts.push({ sql: '0', params: [] });
@@ -291,7 +365,8 @@ export class ContactsService {
       list.push({ id: t.id, name: t.name, color: t.color });
       byContact.set(t.contact_id, list);
     }
-    return rows.map(row => toContact(row, byContact.get(row.id) ?? []));
+    const names = this.sourceNames();
+    return rows.map(row => toContact(row, byContact.get(row.id) ?? [], names));
   }
 
   row(contactId: number): ContactRow {
@@ -502,7 +577,102 @@ export class ContactsService {
         };
       case 'validate':
         return { affected: this.requestValidation(ids) };
+      case 'set_stage': {
+        if (!data.stage) throw badRequest('stage is required');
+        const now = this.now();
+        return {
+          affected: this.core.db.run(
+            'UPDATE contacts SET lead_stage = ?, lead_stage_at = ?, updated_at = ? WHERE lead_stage != ? AND id IN (SELECT value FROM json_each(?))',
+            data.stage,
+            now,
+            now,
+            data.stage,
+            JSON.stringify(ids),
+          ).changes,
+        };
+      }
     }
+  }
+
+  // ---------------------------------------------------------------- lead tracking
+
+  /** Set a lead's stage and/or its shared remark. `by` is who made the change (shown to the team). */
+  setLead(contactId: number, input: unknown, by: string): Contact {
+    const data = leadUpdateSchema.parse(input);
+    const row = this.row(contactId);
+    const now = this.now();
+    this.core.db.tx(() => {
+      if (data.stage !== undefined && data.stage !== row.lead_stage) {
+        this.core.db.run('UPDATE contacts SET lead_stage = ?, lead_stage_at = ? WHERE id = ?', data.stage, now, contactId);
+      }
+      if (data.remark !== undefined && data.remark !== (row.lead_remark ?? '')) {
+        this.core.db.run(
+          'UPDATE contacts SET lead_remark = ?, lead_remark_by = ?, lead_remark_at = ? WHERE id = ?',
+          data.remark || null,
+          data.remark ? by.slice(0, 120) : null,
+          data.remark ? now : null,
+          contactId,
+        );
+      }
+      this.core.db.run('UPDATE contacts SET updated_at = ? WHERE id = ?', now, contactId);
+    });
+    return this.get(contactId);
+  }
+
+  /** Remember which lead source brought a new contact in (first source only). */
+  setLeadSource(contactId: number, sourceId: number): void {
+    this.core.db.run('UPDATE contacts SET lead_source_id = ? WHERE id = ? AND lead_source_id IS NULL', sourceId, contactId);
+  }
+
+  private sourceNames(): Map<number, string> {
+    return new Map(this.core.db.all<{ id: number; name: string }>('SELECT id, name FROM lead_sources').map(r => [r.id, r.name]));
+  }
+
+  /** UTC instant at which the local day `ymd` (+ `addDays`) starts in the business's time zone. */
+  private dayStart(ymd: string, addDays = 0): string {
+    const [y, m, d] = ymd.split('-').map(Number);
+    const noon = new Date(Date.UTC(y, m - 1, d + addDays, 12));
+    return startOfLocalDay(noon, this.settings.get().timezone).toISOString();
+  }
+
+  /** Scoreboard, channel table and funnel for leads added in a date range. */
+  leadReport(input: unknown) {
+    const filter = contactFilterSchema.pick({ from: true, to: true }).parse(input ?? {});
+    const where = this.filterSql(filter);
+    const byStage = Object.fromEntries(LEAD_STAGES.map(stage => [stage, 0])) as Record<LeadStage, number>;
+    for (const r of this.core.db.all<{ lead_stage: LeadStage; n: number }>(
+      `SELECT c.lead_stage, COUNT(*) AS n FROM contacts c WHERE ${where.sql} GROUP BY c.lead_stage`,
+      ...where.params,
+    )) {
+      byStage[r.lead_stage] = r.n;
+    }
+    const total = LEAD_STAGES.reduce((sum, stage) => sum + byStage[stage], 0);
+    const names = this.sourceNames();
+    const channels = new Map<string, { key: string; name: string; leads: number } & Record<LeadStage, number>>();
+    for (const r of this.core.db.all<{ lead_source_id: number | null; source: string | null; lead_stage: LeadStage; n: number }>(
+      `SELECT c.lead_source_id, c.source, c.lead_stage, COUNT(*) AS n FROM contacts c WHERE ${where.sql}
+        GROUP BY c.lead_source_id, CASE WHEN c.lead_source_id IS NULL THEN c.source END, c.lead_stage`,
+      ...where.params,
+    )) {
+      const key = r.lead_source_id ? `src:${r.lead_source_id}` : (r.source ?? 'other');
+      const name = r.lead_source_id ? (names.get(r.lead_source_id) ?? 'Lead form') : channelName(r.source);
+      const entry = channels.get(key) ?? { key, name, leads: 0, untouched: 0, warm: 0, cold: 0, closed: 0 };
+      entry.leads += r.n;
+      entry[r.lead_stage] += r.n;
+      channels.set(key, entry);
+    }
+    return {
+      range: { from: filter.from ?? null, to: filter.to ?? null },
+      total,
+      byStage,
+      channels: [...channels.values()].sort((a, b) => b.leads - a.leads || a.name.localeCompare(b.name)),
+      funnel: [
+        { key: 'total', label: 'Total leads', count: total },
+        { key: 'contacted', label: 'Followed up', count: total - byStage.untouched },
+        { key: 'interested', label: 'Warm or closed', count: byStage.warm + byStage.closed },
+        { key: 'closed', label: 'Closed', count: byStage.closed },
+      ],
+    };
   }
 
   // ---------------------------------------------------------------- inbound + validation helpers
@@ -681,11 +851,15 @@ export class ContactsService {
     const rows = this.core.db.all<ContactRow>(`SELECT c.* FROM contacts c WHERE ${where.sql} ORDER BY c.id`, ...where.params);
     const contacts = this.withTags(rows);
     const attrKeys = [...new Set(contacts.flatMap(c => Object.keys(c.attributes)))].sort();
-    const header = ['phone', 'name', 'email', 'consent', 'consent_source', 'whatsapp', 'tags', 'source', 'created_at', ...attrKeys];
+    const header = ['phone', 'name', 'email', 'lead_stage', 'lead_remark', 'lead_remark_by', 'channel', 'consent', 'consent_source', 'whatsapp', 'tags', 'source', 'created_at', ...attrKeys];
     const body = contacts.map(c => [
       spreadsheetPhone(c.phone),
       c.name,
       c.email,
+      c.leadStage,
+      c.leadRemark,
+      c.leadRemarkBy,
+      c.channel,
       c.consent,
       c.consentSource,
       c.waStatus,

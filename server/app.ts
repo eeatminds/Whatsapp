@@ -395,7 +395,7 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
       if (source.thankYouUrl && String(request.headers['content-type'] ?? '').includes('x-www-form-urlencoded')) {
         return reply.redirect(source.thankYouUrl, 303);
       }
-      return { ok: true, created: result.created };
+      return { ok: true, created: result.created, duplicate: result.duplicate };
     });
   });
 

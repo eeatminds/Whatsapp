@@ -138,6 +138,9 @@ export function Layout({ children, onLogout }: { children: ReactNode; onLogout: 
           <NavItem to="/inbox" icon={<IconInbox />} count={inbox?.unread}>
             Inbox
           </NavItem>
+          <NavItem to="/leads" icon={<IconChart />}>
+            Leads
+          </NavItem>
           <div className="nav-section">Marketing</div>
           <NavItem to="/campaigns" icon={<IconMegaphone />}>
             Campaigns

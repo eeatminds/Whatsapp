@@ -24,7 +24,7 @@ interface LeadSource {
 
 interface LeadEvent {
   id: number;
-  status: 'added' | 'updated' | 'failed';
+  status: 'added' | 'updated' | 'duplicate' | 'failed';
   detail: string | null;
   createdAt: string;
   contactId: number | null;
@@ -66,7 +66,9 @@ function sendNewLeads() {
       method: 'post', contentType: 'application/json', payload: JSON.stringify(lead), muteHttpExceptions: true,
     });
     let status = 'Sent to WA Reach';
-    if (res.getResponseCode() >= 300) {
+    if (res.getResponseCode() < 300) {
+      try { if (JSON.parse(res.getContentText()).duplicate) status = 'Duplicate (number already a lead)'; } catch (e) {}
+    } else {
       try { status = 'Error: ' + JSON.parse(res.getContentText()).error; } catch (e) { status = 'Error ' + res.getResponseCode(); }
     }
     sheet.getRange(i + 1, statusCol + 1).setValue(status);
@@ -226,6 +228,12 @@ function SourceEditor({ source, onClose, onSaved }: { source: LeadSource | null;
         <Field label="Name" hint="Shown in your contacts and notifications, e.g. “Website enquiry form”.">
           <input className="input" value={form.name} maxLength={80} onChange={e => setForm({ ...form, name: e.target.value })} placeholder={KIND_LABEL[form.kind]} />
         </Field>
+        <Field
+          label="Tag every lead from this source"
+          hint="Type a tag and press Enter, e.g. “website-lead” or “diwali-form”. Every lead from here gets it, including leads already received, so you can filter them in Leads and send them campaigns."
+        >
+          <TagPicker value={form.actions.tagIds} placeholder="Add or create a tag…" onChange={tagIds => setForm({ ...form, actions: { ...form.actions, tagIds } })} />
+        </Field>
         <div className="stack tight">
           <span className="label">Then do this</span>
           <div className="grid cols-2">
@@ -239,9 +247,6 @@ function SourceEditor({ source, onClose, onSaved }: { source: LeadSource | null;
                   </option>
                 ))}
               </select>
-            </Field>
-            <Field label="Add tags" hint="Useful for segments, and tag-triggered series.">
-              <TagPicker value={form.actions.tagIds} onChange={tagIds => setForm({ ...form, actions: { ...form.actions, tagIds } })} />
             </Field>
             <Field label="Tell me on WhatsApp" hint="Each new lead is sent to this number from your default WhatsApp number. Leave empty to skip.">
               <input className="input" value={form.actions.notifyPhone} onChange={e => setForm({ ...form, actions: { ...form.actions, notifyPhone: e.target.value } })} placeholder="+91 98765 43210" />
@@ -336,9 +341,18 @@ function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: numb
               <div className="lead-log">
                 {data.events.map(e => (
                   <div key={e.id} className="lead-log-row">
-                    <Badge tone={e.status === 'failed' ? 'red' : e.status === 'added' ? 'green' : undefined}>{e.status === 'added' ? 'New contact' : e.status === 'updated' ? 'Existing contact' : 'Not added'}</Badge>
+                    <Badge tone={e.status === 'failed' ? 'red' : e.status === 'added' ? 'green' : e.status === 'duplicate' ? 'amber' : undefined}>
+                      {e.status === 'added' ? 'New lead' : e.status === 'updated' ? 'Existing contact' : e.status === 'duplicate' ? 'Duplicate' : 'Not added'}
+                    </Badge>
                     <span className="grow">
-                      {e.status === 'failed' ? <span className="small error-text">{e.detail}</span> : `${e.name ?? 'No name'}${e.phone ? `, ${formatPhone(e.phone)}` : ''}`}
+                      {e.status === 'failed' ? (
+                        <span className="small error-text">{e.detail}</span>
+                      ) : (
+                        <>
+                          {`${e.name ?? 'No name'}${e.phone ? `, ${formatPhone(e.phone)}` : ''}`}
+                          {e.status === 'duplicate' && e.detail && <span className="small muted"> · {e.detail}</span>}
+                        </>
+                      )}
                     </span>
                     <span className="small muted">{relativeTime(e.createdAt)}</span>
                   </div>

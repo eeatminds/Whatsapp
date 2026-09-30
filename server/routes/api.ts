@@ -202,6 +202,15 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
 
   app.patch('/contacts/:id', async request => s.contacts.update(params(idParam, request).id, request.body));
 
+  /** Lead stage and the shared call remark; the remark is signed with who wrote it. */
+  app.put('/contacts/:id/lead', async request => {
+    const user = request.auth?.user;
+    const by = user ? (user.name?.trim() || user.email) : 'API';
+    return s.contacts.setLead(params(idParam, request).id, request.body, by);
+  });
+
+  app.get('/leads/report', async request => s.contacts.leadReport(request.query));
+
   app.delete('/contacts/:id', async request => {
     s.contacts.delete(params(idParam, request).id);
     return { ok: true };

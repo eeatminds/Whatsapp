@@ -336,4 +336,33 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX lead_events_source ON lead_events (source_id, id);
   `,
+  // 7: lead tracking. One stage and one shared remark per lead, and the lead source that brought it
+  // in (for the channel report). Repeat submissions of a known number are logged as 'duplicate'.
+  `
+  ALTER TABLE contacts ADD COLUMN lead_stage TEXT NOT NULL DEFAULT 'untouched' CHECK (lead_stage IN ('untouched', 'warm', 'cold', 'closed'));
+  ALTER TABLE contacts ADD COLUMN lead_stage_at TEXT;
+  ALTER TABLE contacts ADD COLUMN lead_remark TEXT;
+  ALTER TABLE contacts ADD COLUMN lead_remark_by TEXT;
+  ALTER TABLE contacts ADD COLUMN lead_remark_at TEXT;
+  ALTER TABLE contacts ADD COLUMN lead_source_id INTEGER REFERENCES lead_sources (id) ON DELETE SET NULL;
+  CREATE INDEX contacts_lead_stage ON contacts (lead_stage);
+  CREATE INDEX contacts_lead_source ON contacts (lead_source_id);
+
+  UPDATE contacts SET lead_source_id = (
+    SELECT e.source_id FROM lead_events e WHERE e.contact_id = contacts.id AND e.status = 'added' ORDER BY e.id LIMIT 1
+  ) WHERE source = 'lead-form';
+
+  CREATE TABLE lead_events_new (
+    id INTEGER PRIMARY KEY,
+    source_id INTEGER NOT NULL REFERENCES lead_sources (id) ON DELETE CASCADE,
+    contact_id INTEGER REFERENCES contacts (id) ON DELETE SET NULL,
+    status TEXT NOT NULL CHECK (status IN ('added', 'updated', 'duplicate', 'failed')),
+    detail TEXT,
+    created_at TEXT NOT NULL
+  );
+  INSERT INTO lead_events_new SELECT id, source_id, contact_id, status, detail, created_at FROM lead_events;
+  DROP TABLE lead_events;
+  ALTER TABLE lead_events_new RENAME TO lead_events;
+  CREATE INDEX lead_events_source ON lead_events (source_id, id);
+  `,
 ];

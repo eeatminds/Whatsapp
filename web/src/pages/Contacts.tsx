@@ -38,6 +38,7 @@ import { IconDownload, IconPlus, IconSearch, IconUpload } from '../components/ic
 import { TagPicker, useTags } from '../components/pickers';
 import { Bubble } from '../components/composer';
 import { displayName, formatDateTime, formatNumber, formatPhone, relativeTime } from '../format';
+import { StagePill } from './Leads';
 
 const AUDIENCE_HANDOFF = 'wa-reach:audience';
 
@@ -99,7 +100,7 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
   const [tagIds, setTagIds] = useState<number[]>([]);
   const [consent, setConsent] = useState<'unknown' | 'opted_in'>('unknown');
   const [consentSource, setConsentSource] = useState('');
-  const [updateExisting, setUpdateExisting] = useState(true);
+  const [updateExisting, setUpdateExisting] = useState(false);
   const [result, setResult] = useState<{ total: number; created: number; updated: number; unchanged: number; skipped: number; errors: Array<{ row: number; value: string; reason: string }> } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -171,7 +172,7 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
       {result ? (
         <div className="stack">
           <Callout tone="success">
-            {formatNumber(result.created)} added, {formatNumber(result.updated)} updated, {formatNumber(result.unchanged)} unchanged, {formatNumber(result.skipped)} skipped.
+            {formatNumber(result.created)} added, {formatNumber(result.updated)} updated, {formatNumber(result.unchanged)} already saved (kept as they were), {formatNumber(result.skipped)} skipped.
           </Callout>
           {result.errors.length > 0 && (
             <div className="table-wrap" style={{ maxHeight: 260, overflowY: 'auto' }}>
@@ -346,7 +347,9 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
               )}
             </div>
           </div>
-          <Toggle checked={updateExisting} onChange={setUpdateExisting} label="Update existing contacts" description="Fill in names, emails and custom fields for numbers already in your list." />
+          <Toggle checked={updateExisting} onChange={setUpdateExisting} label="Update numbers already saved"
+            description="Off: each number stays as it was first added, and repeats are skipped. On: fill in names, emails and custom fields from this file."
+          />
         </div>
       )}
     </Modal>
@@ -817,6 +820,7 @@ export function ContactsPage() {
                       />
                     </th>
                     <th>Contact</th>
+                    <th>Lead stage</th>
                     <th>Tags</th>
                     <th>Consent</th>
                     <th>WhatsApp</th>
@@ -844,6 +848,9 @@ export function ContactsPage() {
                       <td>
                         <div style={{ fontWeight: 550 }}>{c.name || <span className="muted">No name</span>}</div>
                         <div className="small secondary num">{formatPhone(c.phone)}</div>
+                      </td>
+                      <td>
+                        <StagePill stage={c.leadStage} />
                       </td>
                       <td>
                         <div className="row wrap" style={{ gap: 4 }}>

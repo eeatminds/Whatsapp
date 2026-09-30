@@ -196,6 +196,37 @@ async function main(): Promise<void> {
   s.contacts.upsert({ phone: '+91 98450 77001', name: 'Farhan Ali', tags: ['website-lead'], consent: 'opted_in', consentSource: 'Website form' });
   s.contacts.upsert({ phone: '+91 98450 77002', name: 'Gita Menon', tags: ['website-lead'], consent: 'opted_in', consentSource: 'Website form' });
 
+  // Leads from two connected forms over the last month, worked on by the team.
+  const sources = [
+    s.leads.create({ name: 'Website enquiry form', kind: 'website', actions: { tagIds: [web] } }),
+    s.leads.create({ name: 'Instagram ads sheet', kind: 'google_sheet', actions: { tagIds: [web] } }),
+  ];
+  const remarks = [
+    'Called. Wants the Masala Chai starter kit for the office, call back Friday.',
+    'Asked for wholesale rates, sent the price list on WhatsApp.',
+    'Not interested right now, try again after Diwali.',
+    'Ordered 2 hampers. Delivered.',
+  ];
+  const team = ['Priya (sales)', 'Rahul'];
+  for (let i = 0; i < 36; i++) {
+    offset = -Math.floor(random() * 28 + 1) * 86_400_000 - Math.floor(random() * 36_000_000);
+    const source = sources[random() < 0.6 ? 0 : 1];
+    const name = `${FIRST[(i + 7) % FIRST.length]} ${LAST[(i + 3) % LAST.length]}`;
+    const result = s.leads.receive(source, { name, phone: `98860${String(20000 + i * 211).slice(-5)}`, city: CITIES[i % CITIES.length] });
+    if (!result.ok) continue;
+    const roll = random();
+    const stage = roll < 0.35 ? 'untouched' : roll < 0.6 ? 'warm' : roll < 0.8 ? 'cold' : 'closed';
+    if (stage !== 'untouched') {
+      offset += 3 * 3_600_000;
+      const remark = stage === 'warm' ? remarks[random() < 0.5 ? 0 : 1] : stage === 'cold' ? remarks[2] : remarks[3];
+      s.contacts.setLead(result.contactId, { stage, remark }, team[i % team.length]);
+    }
+  }
+  // The same person filling the form twice is kept once.
+  offset = -86_400_000;
+  s.leads.receive(sources[0], { name: 'Duplicate entry', phone: '98860 20000' });
+  offset = 0;
+
   // ---------------------------------------------------------------- serve
   const app = await buildApp(platform, { staticDir: join(here, '..', 'dist', 'web') });
   await app.listen({ host: '127.0.0.1', port: PORT });

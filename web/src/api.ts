@@ -121,9 +121,32 @@ export interface Contact {
   source: string | null;
   lastInboundAt: string | null;
   lastOutboundAt: string | null;
+  leadStage: LeadStage;
+  leadStageAt: string | null;
+  leadRemark: string | null;
+  leadRemarkBy: string | null;
+  leadRemarkAt: string | null;
+  channel: string;
+  channelKey: string;
   createdAt: string;
   updatedAt: string;
   tags: Tag[];
+}
+
+export type LeadStage = 'untouched' | 'warm' | 'cold' | 'closed';
+export const LEAD_STAGES: Array<{ value: LeadStage; label: string }> = [
+  { value: 'untouched', label: 'Untouched' },
+  { value: 'warm', label: 'Warm' },
+  { value: 'cold', label: 'Cold' },
+  { value: 'closed', label: 'Closed' },
+];
+
+export interface LeadReport {
+  range: { from: string | null; to: string | null };
+  total: number;
+  byStage: Record<LeadStage, number>;
+  channels: Array<{ key: string; name: string; leads: number } & Record<LeadStage, number>>;
+  funnel: Array<{ key: string; label: string; count: number }>;
 }
 
 export interface Paged<T> {
@@ -139,6 +162,10 @@ export interface ContactFilter {
   consent?: Consent;
   waStatus?: WaStatus;
   segmentId?: number;
+  stage?: LeadStage;
+  channel?: string;
+  from?: string;
+  to?: string;
   ids?: number[];
 }
 

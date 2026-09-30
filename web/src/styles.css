@@ -40,6 +40,11 @@
   --viz-funnel-3: #2a78d6;
   --viz-funnel-4: #5598e7;
   --viz-funnel-5: #86b6ef;
+  /* Lead stages (validated as a categorical set, light and dark). Always shown with their name. */
+  --stage-untouched: #8a63d2;
+  --stage-warm: #eb6834;
+  --stage-cold: #2a78d6;
+  --stage-closed: #1f9d6b;
 
   --chat-bg: #efe7dd;
   --bubble-out: #d9fdd3;
@@ -87,6 +92,10 @@
     --viz-funnel-3: #3987e5;
     --viz-funnel-4: #256abf;
     --viz-funnel-5: #184f95;
+    --stage-untouched: #9474d8;
+    --stage-warm: #e0703f;
+    --stage-cold: #3987e5;
+    --stage-closed: #2ea774;
     --chat-bg: #0b141a;
     --bubble-out: #144d37;
     --bubble-in: #202c33;
@@ -1505,3 +1514,51 @@ table.table {
 .health-list li { display: flex; align-items: flex-start; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--border); }
 .health-list li:first-child { border-top: none; }
 .health-list li .badge { flex-shrink: 0; margin-top: 2px; }
+
+/* Leads */
+.lead-range { gap: 12px; align-items: center; }
+.lead-range .segmented, .leads-filters .segmented { flex-wrap: wrap; max-width: 100%; }
+.leads-filters { flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .lead-range .segmented button, .leads-filters .segmented button { padding: 5px 9px; }
+}
+.scoreboard { display: flex; gap: 32px; align-items: center; flex-wrap: wrap; }
+.hero-number { font-size: 40px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stage-bar { display: flex; gap: 2px; height: 14px; border-radius: 4px; overflow: hidden; background: var(--surface-sunken); }
+.stage-seg { display: block; min-width: 4px; }
+.stage-seg.stage-untouched, .swatch.stage-untouched, .stage-pill.stage-untouched .dot { background: var(--stage-untouched); }
+.stage-seg.stage-warm, .swatch.stage-warm, .stage-pill.stage-warm .dot { background: var(--stage-warm); }
+.stage-seg.stage-cold, .swatch.stage-cold, .stage-pill.stage-cold .dot { background: var(--stage-cold); }
+.stage-seg.stage-closed, .swatch.stage-closed, .stage-pill.stage-closed .dot { background: var(--stage-closed); }
+.stage-legend { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.stage-legend-item { display: inline-flex; align-items: center; gap: 7px; padding: 4px 8px; margin: 0 -8px; border: 1px solid transparent; border-radius: var(--radius-sm); background: none; font: inherit; color: inherit; cursor: pointer; }
+.stage-legend-item:hover { background: var(--surface-2); }
+.stage-legend-item.active { border-color: var(--border-strong); background: var(--surface-2); }
+.swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.stage-pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); font-size: 12.5px; color: var(--text); white-space: nowrap; }
+.stage-pill .dot { width: 7px; height: 7px; border-radius: 50%; }
+.stage-select {
+  appearance: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-left-width: 5px;
+  border-radius: 999px;
+  padding: 4px 12px 4px 10px;
+  cursor: pointer;
+  min-width: 108px;
+}
+.stage-select:focus-visible { outline: none; box-shadow: var(--focus); }
+.stage-select.stage-untouched { border-left-color: var(--stage-untouched); }
+.stage-select.stage-warm { border-left-color: var(--stage-warm); }
+.stage-select.stage-cold { border-left-color: var(--stage-cold); }
+.stage-select.stage-closed { border-left-color: var(--stage-closed); }
+.table tbody tr.selected td { background: var(--surface-2); }
+.leads-table td { vertical-align: top; }
+.remark-col { min-width: 220px; max-width: 360px; }
+.remark-view { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; background: none; border: 1px dashed transparent; border-radius: var(--radius-sm); padding: 4px 6px; margin: -4px -6px; font: inherit; color: inherit; cursor: text; }
+.remark-view:hover { border-color: var(--border-strong); }
+.remark-text { white-space: pre-wrap; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.remark-edit .textarea { min-width: 220px; }

@@ -199,7 +199,15 @@ export function ColumnChart<T extends Record<string, number | string>>({
 }
 
 /** Ordered funnel stages as horizontal bars on a validated one-hue ordinal ramp. */
-export function Funnel({ stages }: { stages: Array<{ label: string; value: number; hint?: string }> }) {
+export function Funnel({
+  stages,
+  caption = 'Share of messages sent',
+  baseLabel = 'Of sent',
+}: {
+  stages: Array<{ label: string; value: number; hint?: string }>;
+  caption?: string;
+  baseLabel?: string;
+}) {
   const [table, setTable] = useState(false);
   const base = stages[0]?.value ?? 0;
   const max = Math.max(1, ...stages.map(s => s.value));
@@ -207,7 +215,7 @@ export function Funnel({ stages }: { stages: Array<{ label: string; value: numbe
   return (
     <div className="stack" style={{ gap: 10 }}>
       <div className="row between">
-        <span className="small muted">Share of messages sent</span>
+        <span className="small muted">{caption}</span>
         <ViewToggle table={table} onChange={setTable} />
       </div>
       {table ? (
@@ -216,7 +224,7 @@ export function Funnel({ stages }: { stages: Array<{ label: string; value: numbe
             <tr>
               <th>Stage</th>
               <th className="num">Count</th>
-              <th className="num">Of sent</th>
+              <th className="num">{baseLabel}</th>
             </tr>
           </thead>
           <tbody>

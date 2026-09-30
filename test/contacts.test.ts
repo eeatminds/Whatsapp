@@ -29,10 +29,17 @@ describe('contacts', () => {
     });
     expect(list.body.items[0].tags.map((t: { name: string }) => t.name)).toEqual(['diwali', 'vip']);
 
-    // Re-import updates in place.
+    // By default a re-import keeps the first details (one number, one lead)...
+    const kept = await env.api('POST', '/api/contacts/import', {
+      csv: 'phone,city\n+919876560002,Mumbai',
+      mapping: { '0': 'phone', '1': 'attr:city' },
+    });
+    expect(kept.body).toMatchObject({ created: 0, updated: 0, unchanged: 1 });
+    // ...and updates in place only when asked to.
     const again = await env.api('POST', '/api/contacts/import', {
       csv: 'phone,city\n+919876560002,Mumbai',
       mapping: { '0': 'phone', '1': 'attr:city' },
+      updateExisting: true,
     });
     expect(again.body).toMatchObject({ created: 0, updated: 1 });
   });

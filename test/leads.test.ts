@@ -52,12 +52,18 @@ describe('lead sources', () => {
     expect(note?.text).toContain('New lead from *Website enquiry*');
     expect(note?.text).toContain('Asha Rao');
 
-    // The same person again updates the contact without a second welcome.
-    const again = await post(source.url, JSON.stringify({ name: 'Asha Rao', phone: '+919876543210' }));
-    expect(JSON.parse(again.body)).toMatchObject({ ok: true, created: false });
+    // The same number again is a duplicate: the first details stay, no second welcome or note.
+    const sentBefore = env.fake.sent.length;
+    const again = await post(source.url, JSON.stringify({ name: 'Someone Else', phone: '+919876543210', email: 'other@example.com' }));
+    expect(JSON.parse(again.body)).toMatchObject({ ok: true, created: false, duplicate: true });
+    await env.run(5, 2000);
+    expect(env.fake.sent.length).toBe(sentBefore);
+    expect(env.core.db.get("SELECT name, email FROM contacts WHERE phone = '919876543210'")).toEqual({ name: 'Asha Rao', email: 'asha@example.com' });
+    expect(env.core.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM contacts WHERE phone = '919876543210'")!.n).toBe(1);
     const detail = await env.api('GET', `/api/lead-sources/${source.id}`);
     expect(detail.body.source).toMatchObject({ received: 2, failed: 0 });
-    expect(detail.body.events.map((e: { status: string }) => e.status)).toEqual(['updated', 'added']);
+    expect(detail.body.events.map((e: { status: string }) => e.status)).toEqual(['duplicate', 'added']);
+    expect(detail.body.events[0].detail).toMatch(/^Already a lead since \d{4}-\d{2}-\d{2}/);
   });
 
   it('accepts plain HTML forms and form-builder payloads', async () => {

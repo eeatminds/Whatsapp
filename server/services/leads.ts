@@ -244,9 +244,15 @@ export class LeadsService {
     return this.get(lastInsertRowid);
   }
 
+  /** Tags newly added to a source are also given to the leads it already brought in. */
   update(sourceId: number, input: unknown): LeadSource {
-    this.row(sourceId);
+    const before = this.toSource(this.row(sourceId));
     const data = this.validate(input);
+    const newTags = data.actions.tagIds.filter(id => !before.actions.tagIds.includes(id));
+    if (newTags.length) {
+      const ids = this.core.db.all<{ id: number }>('SELECT id FROM contacts WHERE lead_source_id = ?', sourceId).map(r => r.id);
+      this.contacts.addTags(ids, newTags);
+    }
     this.core.db.run(
       'UPDATE lead_sources SET name = ?, kind = ?, active = ?, actions = ?, thank_you_url = ?, updated_at = ? WHERE id = ?',
       data.name,
@@ -285,7 +291,7 @@ export class LeadsService {
       .map(e => ({ id: e.id, status: e.status, detail: e.detail, createdAt: e.created_at, contactId: e.contact_id, name: e.name, phone: e.phone }));
   }
 
-  private logEvent(sourceId: number, status: 'added' | 'updated' | 'failed', contactId: number | null, detail: string | null): void {
+  private logEvent(sourceId: number, status: 'added' | 'updated' | 'duplicate' | 'failed', contactId: number | null, detail: string | null): void {
     const at = this.now();
     this.core.db.run('INSERT INTO lead_events (source_id, contact_id, status, detail, created_at) VALUES (?, ?, ?, ?, ?)', sourceId, contactId, status, detail, at);
     this.core.db.run(
@@ -308,8 +314,15 @@ export class LeadsService {
     return row && safeEqual(row.token, token) ? this.toSource(row) : null;
   }
 
-  /** Turn one submitted lead into a contact and run the source's actions. */
-  receive(source: LeadSource, payload: unknown): { ok: true; contactId: number; created: boolean } | { ok: false; error: string } {
+  /**
+   * Turn one submitted lead into a contact and run the source's actions.
+   * One number, one lead: if the number is already saved (from any source), nothing about it changes
+   * — no overwritten details, no second welcome message — and the submission is logged as a duplicate.
+   */
+  receive(
+    source: LeadSource,
+    payload: unknown,
+  ): { ok: true; contactId: number; created: boolean; duplicate: boolean } | { ok: false; error: string } {
     const settings = this.settings.get();
     const lead = parseLead(payload, settings.defaultCountry);
     if (!lead.phone) {
@@ -318,6 +331,12 @@ export class LeadsService {
         : 'The lead was empty.';
       this.logEvent(source.id, 'failed', null, error.slice(0, 300));
       return { ok: false, error };
+    }
+    const existing = this.contacts.findByPhone(lead.phone);
+    if (existing) {
+      const since = existing.created_at.slice(0, 10);
+      this.logEvent(source.id, 'duplicate', existing.id, `Already a lead since ${since}; kept the first details`);
+      return { ok: true, contactId: existing.id, created: false, duplicate: true };
     }
     const { actions } = source;
     let result;
@@ -333,6 +352,7 @@ export class LeadsService {
           ...(actions.markOptedIn ? { consent: 'opted_in' as const, consentSource: `form: ${source.name}`.slice(0, 120) } : {}),
         });
         const contactId = upserted.contact.id;
+        if (upserted.created) this.contacts.setLeadSource(contactId, source.id);
         if (actions.sequenceId) {
           try {
             this.sequences.enroll(actions.sequenceId, [contactId], false);
@@ -349,7 +369,7 @@ export class LeadsService {
     }
     this.logEvent(source.id, result.created ? 'added' : 'updated', result.contactId, null);
     this.notifyOwner(source, lead, result.created);
-    return { ok: true, ...result };
+    return { ok: true, ...result, duplicate: false };
   }
 
   private notifyOwner(source: LeadSource, lead: ParsedLead, created: boolean): void {
