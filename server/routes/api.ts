@@ -142,7 +142,7 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   app.post('/lead-sources', async (request, reply) => reply.status(201).send(s.leads.create(request.body)));
   app.get('/lead-sources/:id', async request => {
     const { id } = params(idParam, request);
-    return { source: s.leads.get(id), events: s.leads.events(id) };
+    return { source: s.leads.get(id), events: s.leads.events(id), columns: s.leads.columnInfo(id) };
   });
   app.patch('/lead-sources/:id', async request => s.leads.update(params(idParam, request).id, request.body));
   app.put('/lead-sources/:id/fields', async request => s.leads.setFields(params(idParam, request).id, request.body));
@@ -167,6 +167,16 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   });
 
   app.get('/contacts/attributes', async () => ({ keys: s.contacts.attributeKeys() }));
+
+  // Custom fields across all contacts: rename, move into name/email, delete; rules for new leads.
+  app.get('/contacts/fields', async () => ({ fields: s.contacts.fields(), rules: s.contacts.fieldRules() }));
+  app.post('/contacts/fields/rename', async request => s.contacts.renameField(request.body));
+  app.post('/contacts/fields/move', async request => s.contacts.moveField(request.body));
+  app.post('/contacts/fields/delete', async request => s.contacts.deleteField(request.body));
+  app.delete('/contacts/fields/rules/:key', async request => {
+    s.contacts.removeFieldRule(z.object({ key: z.string() }).parse(request.params).key);
+    return { ok: true };
+  });
 
   app.get('/contacts/export.csv', async (request, reply) => {
     const csv = s.contacts.exportCsv(filterFromQuery(request.query));

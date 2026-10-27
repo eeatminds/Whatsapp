@@ -28,7 +28,6 @@ import {
   Modal,
   PageHeader,
   Pagination,
-  TagChip,
   Toggle,
   WaBadge,
   useConfirm,
@@ -38,63 +37,9 @@ import { IconDownload, IconPlus, IconSearch, IconUpload } from '../components/ic
 import { TagPicker, useTags } from '../components/pickers';
 import { Bubble } from '../components/composer';
 import { displayName, formatDateTime, formatNumber, formatPhone, relativeTime } from '../format';
-import { StagePill } from './Leads';
+import { ColumnPicker, ManageFieldsModal, columnCell, columnClass, columnLabel, fieldLabel, useContactColumns } from './ContactColumns';
 
 const AUDIENCE_HANDOFF = 'wa-reach:audience';
-const COLUMNS_KEY = 'wa-reach:contact-columns';
-
-/** "course_interested" → "Course interested". */
-export function fieldLabel(key: string): string {
-  const words = key.replace(/_/g, ' ');
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-/** Custom fields shown as columns, remembered in this browser. */
-function useStoredColumns(): [string[], (next: string[]) => void] {
-  const [columns, setColumns] = useState<string[]>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? '[]');
-      return Array.isArray(saved) ? saved.filter((k): k is string => typeof k === 'string').slice(0, 12) : [];
-    } catch {
-      return [];
-    }
-  });
-  const save = (next: string[]) => {
-    setColumns(next);
-    try {
-      localStorage.setItem(COLUMNS_KEY, JSON.stringify(next));
-    } catch {
-      // Private window or blocked storage: the choice lasts for this visit only.
-    }
-  };
-  return [columns, save];
-}
-
-function ColumnPicker({ keys, value, onChange }: { keys: string[]; value: string[]; onChange: (next: string[]) => void }) {
-  const chosen = value.filter(k => keys.includes(k));
-  return (
-    <details className="col-picker">
-      <summary className="btn sm">Columns{chosen.length ? ` (${chosen.length})` : ''}</summary>
-      <div className="col-picker-panel">
-        <div className="small muted" style={{ marginBottom: 6 }}>
-          Show custom fields as columns
-        </div>
-        {keys.map(k => (
-          <label key={k} className="row" style={{ gap: 8, padding: '3px 0', cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={chosen.includes(k)}
-              disabled={!chosen.includes(k) && chosen.length >= 12}
-              onChange={e => onChange(e.target.checked ? [...chosen, k] : chosen.filter(c => c !== k))}
-            />
-            {fieldLabel(k)}
-          </label>
-        ))}
-      </div>
-    </details>
-  );
-}
-
 function toQuery(filter: ContactFilter, extra: Record<string, string | number> = {}): string {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries({ ...filter, ...extra })) if (v !== undefined && v !== '' && !Array.isArray(v)) params.set(k, String(v));
@@ -682,10 +627,10 @@ export function ContactsPage() {
   const [bulk, setBulk] = useState<'add_tags' | 'remove_tags' | 'set_consent' | 'enroll' | null>(null);
   const { data: tags } = useTags();
   const { data: segments } = useApi<Segment[]>('/api/segments');
-  const { data: attributeData } = useApi<{ keys: string[] }>('/api/contacts/attributes');
+  const { data: attributeData, reload: reloadFields } = useApi<{ keys: string[] }>('/api/contacts/attributes');
   const fieldKeys = attributeData?.keys ?? [];
-  const [columns, setColumns] = useStoredColumns();
-  const shownColumns = columns.filter(k => fieldKeys.includes(k));
+  const { columns, setColumns, renameField } = useContactColumns(fieldKeys);
+  const [managingFields, setManagingFields] = useState(false);
   const [fieldText, setFieldText] = useState('');
 
   useEffect(() => {
@@ -825,7 +770,7 @@ export function ContactsPage() {
             )}
           </div>
           <div className="row">
-            {fieldKeys.length > 0 && <ColumnPicker keys={fieldKeys} value={columns} onChange={setColumns} />}
+            <ColumnPicker fieldKeys={fieldKeys} columns={columns} onChange={setColumns} onManageFields={() => setManagingFields(true)} />
             <span className="muted small">{data ? `${formatNumber(data.total)} contacts` : ''}</span>
           </div>
         </div>
@@ -916,15 +861,9 @@ export function ContactsPage() {
                       />
                     </th>
                     <th>Contact</th>
-                    <th>Lead stage</th>
-                    <th>Tags</th>
-                    {shownColumns.map(k => (
-                      <th key={k}>{fieldLabel(k)}</th>
+                    {columns.map(id => (
+                      <th key={id}>{columnLabel(id)}</th>
                     ))}
-                    <th>Consent</th>
-                    <th>WhatsApp</th>
-                    <th>Last message in</th>
-                    <th>Added</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -948,30 +887,11 @@ export function ContactsPage() {
                         <div style={{ fontWeight: 550 }}>{c.name || <span className="muted">No name</span>}</div>
                         <div className="small secondary num">{formatPhone(c.phone)}</div>
                       </td>
-                      <td>
-                        <StagePill stage={c.leadStage} />
-                      </td>
-                      <td>
-                        <div className="row wrap" style={{ gap: 4 }}>
-                          {c.tags.slice(0, 3).map(t => (
-                            <TagChip key={t.id} tag={t} />
-                          ))}
-                          {c.tags.length > 3 && <span className="small muted">+{c.tags.length - 3}</span>}
-                        </div>
-                      </td>
-                      {shownColumns.map(k => (
-                        <td key={k} className="small cell-clip" title={c.attributes[k]}>
-                          {c.attributes[k] || <span className="muted">–</span>}
+                      {columns.map(id => (
+                        <td key={id} className={columnClass(id)}>
+                          {columnCell(id, c)}
                         </td>
                       ))}
-                      <td>
-                        <ConsentBadge consent={c.consent} />
-                      </td>
-                      <td>
-                        <WaBadge status={c.waStatus} pending={c.waCheckPending} />
-                      </td>
-                      <td className="secondary small nowrap">{c.lastInboundAt ? relativeTime(c.lastInboundAt) : '–'}</td>
-                      <td className="secondary small nowrap">{relativeTime(c.createdAt)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -984,6 +904,19 @@ export function ContactsPage() {
 
       {importing && <ImportModal onClose={() => setImporting(false)} onDone={() => void reload()} />}
       {open !== null && <ContactDrawer contactId={open} onClose={() => setOpen(null)} onChanged={() => void reload()} />}
+      {managingFields && (
+        <ManageFieldsModal
+          onClose={() => setManagingFields(false)}
+          onChanged={() => {
+            void reload();
+            void reloadFields();
+          }}
+          onRenamed={(from, to) => {
+            renameField(from, to);
+            if (filter.field === from) setFilter({ ...filter, field: to });
+          }}
+        />
+      )}
       {bulk && <BulkModal kind={bulk} count={selectionCount} filter={selectionFilter} onClose={() => setBulk(null)} onDone={() => void reload()} />}
       {dialog}
     </div>

@@ -42,6 +42,13 @@ export function renderTemplate(template: string, vars: Record<string, unknown>):
   return { text, missing: [...missing] };
 }
 
+/** Point every {{from}} / {{from|fallback}} at a renamed variable; other text is left as is. */
+export function renameVariable(template: string, from: string, to: string): string {
+  return template.replace(PLACEHOLDER, (match, rawName: string, fallback: string | undefined) =>
+    normalizeVarName(rawName) === from ? (fallback !== undefined ? `{{${to}|${fallback}}}` : `{{${to}}}`) : match,
+  );
+}
+
 /** Variable names referenced by a template, for the editor's "used variables" hint. */
 export function templateVariables(template: string): string[] {
   const names = new Set<string>();

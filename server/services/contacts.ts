@@ -6,6 +6,7 @@ import { badRequest, notFound } from '../lib/errors.js';
 import { normalizePhone, spreadsheetPhone } from '../lib/phone.js';
 import { startOfLocalDay } from '../lib/time.js';
 import { parseCsv, toCsv } from '../lib/csv.js';
+import { renameVariable } from '../lib/template.js';
 import type { SettingsService } from './settings.js';
 import type { TagsService, Tag } from './tags.js';
 import { andFragments, escapeLike, type SegmentsService, type SqlFragment } from './segments.js';
@@ -185,6 +186,14 @@ export const contactFilterSchema = z.object({
 
 export type ContactFilter = z.infer<typeof contactFilterSchema>;
 
+export interface FieldRule {
+  target: 'rename' | 'name' | 'email' | 'ignore';
+  renameTo: string | null;
+}
+const fieldKey = z.string().regex(/^[a-z0-9_]{1,64}$/, 'Unknown field');
+/** JSON path for a custom field key (keys are [a-z0-9_] only). */
+const jsonPath = (key: string) => `$."${key}"`;
+
 export const bulkActionSchema = z.object({
   filter: contactFilterSchema,
   action: z.enum(['add_tags', 'remove_tags', 'set_consent', 'set_stage', 'delete', 'validate']),
@@ -324,7 +333,7 @@ export class ContactsService {
     if (filter.stage) parts.push({ sql: 'c.lead_stage = ?', params: [filter.stage] });
     if (filter.field) {
       // The key is limited to [a-z0-9_], so it is safe inside the JSON path.
-      const value = `json_extract(c.attributes, '$.${filter.field}')`;
+      const value = `json_extract(c.attributes, '$."${filter.field}"')`;
       if (filter.fieldValue) parts.push({ sql: `CAST(${value} AS TEXT) LIKE ? ESCAPE '\\'`, params: [`%${escapeLike(filter.fieldValue)}%`] });
       else parts.push({ sql: `${value} IS NOT NULL AND ${value} != ''`, params: [] });
     }
@@ -421,8 +430,9 @@ export class ContactsService {
       const now = this.now();
       let contactId: number;
       let created = false;
+      const incoming = this.applyFieldRenames(cleanAttributes(data.attributes));
       if (existing) {
-        const attrs = { ...parseJson<Record<string, string>>(existing.attributes, {}), ...cleanAttributes(data.attributes) };
+        const attrs = { ...parseJson<Record<string, string>>(existing.attributes, {}), ...incoming };
         this.core.db.run(
           'UPDATE contacts SET name = COALESCE(?, name), email = COALESCE(?, email), attributes = ?, updated_at = ? WHERE id = ?',
           data.name || null,
@@ -439,7 +449,7 @@ export class ContactsService {
           phone,
           data.name || null,
           data.email || null,
-          JSON.stringify(cleanAttributes(data.attributes)),
+          JSON.stringify(incoming),
           data.source ?? 'manual',
           now,
           now,
@@ -795,6 +805,7 @@ export class ContactsService {
     const tagCache = new Map<string, number>();
     const seen = new Set<string>();
     const consentSource = data.consentSource || 'import';
+    const rules = this.fieldRules();
 
     this.core.db.tx(() => {
       for (let r = 1; r < rows.length; r++) {
@@ -812,7 +823,12 @@ export class ContactsService {
           else if (field === 'last_name') record.last = value;
           else if (field === 'email') record.email = value;
           else if (field === 'tags') record.tags.push(...value.split(/[,;|]/).map(t => t.trim()).filter(Boolean));
-          else record.attrs[field.slice(5)] = value;
+          else {
+            const key = field.slice(5);
+            const rule = rules[key];
+            if (rule?.target === 'ignore') continue;
+            record.attrs[rule?.target === 'rename' && rule.renameTo ? rule.renameTo : key] = value;
+          }
         }
         const normalized = normalizePhone(record.phone, country);
         if (!normalized.ok) {
@@ -903,6 +919,129 @@ export class ContactsService {
       ...attrKeys.map(k => c.attributes[k] ?? ''),
     ]);
     return toCsv(header, body);
+  }
+
+  // ---------------------------------------------------------------- custom fields (business-wide)
+
+  /** Custom fields in use and how many contacts have each. */
+  fields(): Array<{ key: string; count: number }> {
+    return this.core.db.all<{ key: string; count: number }>(
+      "SELECT j.key AS key, COUNT(*) AS count FROM contacts c, json_each(c.attributes) j WHERE j.value IS NOT NULL AND j.value != '' GROUP BY j.key ORDER BY j.key LIMIT 500",
+    );
+  }
+
+  /** What happens to a field in new leads and imports: renamed, put into name/email, or not saved. */
+  fieldRules(): Record<string, FieldRule> {
+    const rules: Record<string, FieldRule> = {};
+    for (const r of this.core.db.all<{ key: string; target: FieldRule['target']; rename_to: string | null }>('SELECT key, target, rename_to FROM field_rules')) {
+      rules[r.key] = { target: r.target, renameTo: r.rename_to };
+    }
+    return rules;
+  }
+
+  removeFieldRule(key: string): void {
+    this.core.db.run('DELETE FROM field_rules WHERE key = ?', fieldKey.parse(key));
+  }
+
+  /** Custom fields with any renames applied (used for new leads, imports and API calls). */
+  applyFieldRenames(attrs: Record<string, string>, rules = this.fieldRules()): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(attrs)) {
+      const rule = rules[key];
+      if (rule?.target === 'ignore') continue;
+      const target = rule?.target === 'rename' && rule.renameTo ? rule.renameTo : key;
+      if (!(target in out)) out[target] = value;
+    }
+    return out;
+  }
+
+  private setFieldRule(key: string, target: FieldRule['target'], renameTo: string | null = null): void {
+    this.core.db.run(
+      'INSERT INTO field_rules (key, target, rename_to, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET target = excluded.target, rename_to = excluded.rename_to, updated_at = excluded.updated_at',
+      key,
+      target,
+      renameTo,
+      this.now(),
+    );
+  }
+
+  /**
+   * Rename a custom field for every contact, in saved messages ({{old}} -> {{new}}) and segments,
+   * and for future leads/imports. A contact that already has the new field keeps its value.
+   */
+  renameField(input: unknown): { renamed: number } {
+    const { from, to: rawTo } = z.object({ from: fieldKey, to: z.string().trim().min(1).max(64) }).parse(input);
+    const to = normalizeAttrKey(rawTo);
+    if (!to) throw badRequest('Use letters or numbers in the new name');
+    if (RESERVED_ATTRS.has(to)) throw badRequest(`"${rawTo}" is a built-in field; use "Move into Name/Email" instead`);
+    if (to === from) return { renamed: 0 };
+    const pf = jsonPath(from);
+    const pt = jsonPath(to);
+    return this.core.db.tx(() => {
+      const now = this.now();
+      const moved = this.core.db.run(
+        `UPDATE contacts SET attributes = json_set(json_remove(attributes, ?), ?, json_extract(attributes, ?)), updated_at = ?
+          WHERE json_type(attributes, ?) IS NOT NULL AND json_type(attributes, ?) IS NULL`,
+        pf, pt, pf, now, pf, pt,
+      ).changes;
+      const merged = this.core.db.run('UPDATE contacts SET attributes = json_remove(attributes, ?), updated_at = ? WHERE json_type(attributes, ?) IS NOT NULL', pf, now, pf).changes;
+
+      // Saved messages and audiences that use the old name.
+      const bodies: Array<[table: string, column: string]> = [
+        ['templates', 'body'],
+        ['auto_replies', 'reply_body'],
+        ['sequences', 'steps'],
+        ['campaigns', 'variants'],
+      ];
+      for (const [table, column] of bodies) {
+        for (const row of this.core.db.all<{ id: number; text: string }>(`SELECT id, ${column} AS text FROM ${table} WHERE ${column} LIKE '%{{%'`)) {
+          const next = renameVariable(row.text, from, to);
+          if (next !== row.text) this.core.db.run(`UPDATE ${table} SET ${column} = ? WHERE id = ?`, next, row.id);
+        }
+      }
+      this.core.db.run('UPDATE segments SET rules = replace(rules, ?, ?) WHERE instr(rules, ?) > 0', `"key":"${from}"`, `"key":"${to}"`, `"key":"${from}"`);
+
+      // New leads and imports: the old name now arrives as the new one.
+      this.core.db.run("UPDATE field_rules SET rename_to = ? WHERE target = 'rename' AND rename_to = ?", to, from);
+      this.core.db.run('DELETE FROM field_rules WHERE key = ?', to);
+      this.setFieldRule(from, 'rename', to);
+      return { renamed: moved + merged };
+    });
+  }
+
+  /** Move a custom field into the name or email of contacts that have none, and do so for new leads. */
+  moveField(input: unknown): { moved: number; left: number } {
+    const { from, to } = z.object({ from: fieldKey, to: z.enum(['name', 'email']) }).parse(input);
+    const pf = jsonPath(from);
+    return this.core.db.tx(() => {
+      const now = this.now();
+      const moved =
+        to === 'name'
+          ? this.core.db.run(
+              `UPDATE contacts SET name = substr(trim(json_extract(attributes, ?)), 1, 120), attributes = json_remove(attributes, ?), updated_at = ?
+                WHERE (name IS NULL OR trim(name) = '') AND trim(coalesce(json_extract(attributes, ?), '')) != ''`,
+              pf, pf, now, pf,
+            ).changes
+          : this.core.db.run(
+              `UPDATE contacts SET email = substr(trim(json_extract(attributes, ?)), 1, 200), attributes = json_remove(attributes, ?), updated_at = ?
+                WHERE (email IS NULL OR trim(email) = '') AND trim(json_extract(attributes, ?)) LIKE '%_@_%._%' AND instr(trim(json_extract(attributes, ?)), ' ') = 0`,
+              pf, pf, now, pf, pf,
+            ).changes;
+      this.setFieldRule(from, to);
+      const left = this.core.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM contacts WHERE json_type(attributes, ?) IS NOT NULL', pf)?.n ?? 0;
+      return { moved, left };
+    });
+  }
+
+  /** Remove a custom field from every contact; by default new leads stop saving it too. */
+  deleteField(input: unknown): { removed: number } {
+    const { key, future } = z.object({ key: fieldKey, future: z.boolean().default(true) }).parse(input);
+    const path = jsonPath(key);
+    return this.core.db.tx(() => {
+      const removed = this.core.db.run('UPDATE contacts SET attributes = json_remove(attributes, ?), updated_at = ? WHERE json_type(attributes, ?) IS NOT NULL', path, this.now(), path).changes;
+      if (future) this.setFieldRule(key, 'ignore');
+      return { removed };
+    });
   }
 
   attributeKeys(): string[] {

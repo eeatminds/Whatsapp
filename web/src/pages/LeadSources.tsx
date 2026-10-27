@@ -42,7 +42,14 @@ const columnLabel = (key: string) => {
   return words.charAt(0).toUpperCase() + words.slice(1);
 };
 
-function ColumnsEditor({ source, onSaved }: { source: LeadSource; onSaved: () => void }) {
+interface ColumnInfo {
+  samples: Record<string, string>;
+  leads: number;
+  missingName: number;
+  missingEmail: number;
+}
+
+function ColumnsEditor({ source, info, onSaved }: { source: LeadSource; info?: ColumnInfo; onSaved: () => void }) {
   const toast = useToast();
   const [map, setMap] = useState<Record<string, FieldTarget>>(source.fieldMap);
   const [busy, setBusy] = useState(false);
@@ -50,8 +57,16 @@ function ColumnsEditor({ source, onSaved }: { source: LeadSource; onSaved: () =>
   if (source.fieldsSeen.length === 0) {
     return <p className="secondary">The columns of your {KIND_LABEL[source.kind].toLowerCase()} show here after the first lead arrives, so you can check each one was understood.</p>;
   }
+  const nameChosen = Object.values(map).some(t => t === 'name' || t === 'first_name');
   return (
     <div className="stack">
+      {info && info.missingName > 0 && !nameChosen && (
+        <Callout tone="warn">
+          {info.missingName === info.leads ? 'Leads from here have no name.' : `${info.missingName} of ${info.leads} leads from here have no name.`} Your form sends coded
+          column names (like “text-870”), so look at the examples below, set the column that holds the name to <strong>Full name</strong>, and save. Leads already received
+          are fixed too.
+        </Callout>
+      )}
       <p className="secondary small">
         Each column we receive and what it is saved as. Most are recognised by their names; change any that are wrong. Custom fields show in Contacts, can be filtered
         on, and can go into messages, e.g. <code>{'{{city}}'}</code>.
@@ -69,6 +84,7 @@ function ColumnsEditor({ source, onSaved }: { source: LeadSource; onSaved: () =>
               <tr key={f.key}>
                 <td>
                   {columnLabel(f.key)}
+                  {info?.samples[f.key] && <div className="small secondary">e.g. “{info.samples[f.key]}”</div>}
                   {f.as === 'custom' && !map[f.key] && <div className="small muted">Custom field <code>{`{{${f.key}}}`}</code></div>}
                 </td>
                 <td style={{ minWidth: 220 }}>
@@ -381,7 +397,7 @@ function SourceEditor({ source, onClose, onSaved }: { source: LeadSource | null;
 }
 
 function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: number; onClose: () => void; onEdit: (s: LeadSource) => void; onChanged: () => void }) {
-  const { data, error, reload } = useApi<{ source: LeadSource; events: LeadEvent[] }>(`/api/lead-sources/${sourceId}`, { poll: 5000 });
+  const { data, error, reload } = useApi<{ source: LeadSource; events: LeadEvent[]; columns: ColumnInfo }>(`/api/lead-sources/${sourceId}`, { poll: 5000 });
   const [view, setView] = useState<'setup' | 'columns' | 'leads'>('setup');
   const { confirm, dialog } = useConfirm();
   const toast = useToast();
@@ -433,6 +449,14 @@ function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: numb
           ) : (
             <Callout>Waiting for the first lead… Follow the steps below and send yourself a test lead. This updates on its own.</Callout>
           )}
+          {data.columns.missingName > 0 && view !== 'columns' && source.fieldsSeen.some(f => f.as === 'custom') && (
+            <Callout tone="warn">
+              {data.columns.missingName} lead{data.columns.missingName === 1 ? '' : 's'} from here {data.columns.missingName === 1 ? 'has' : 'have'} no name.{' '}
+              <button type="button" className="link-button" onClick={() => setView('columns')}>
+                Choose which column is the name
+              </button>
+            </Callout>
+          )}
           {source.url && <CopyField label="Your private lead link" value={source.url} hint="Anyone with this link can add leads to your account, so share it only with your form or sheet." />}
           <Segmented
             value={view}
@@ -444,7 +468,7 @@ function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: numb
             ]}
           />
           {view === 'setup' && source.url && <SetupSteps source={source} />}
-          {view === 'columns' && <ColumnsEditor key={JSON.stringify(source.fieldMap)} source={source} onSaved={() => void reload()} />}
+          {view === 'columns' && <ColumnsEditor key={JSON.stringify(source.fieldMap)} source={source} info={data.columns} onSaved={() => void reload()} />}
           {view === 'leads' &&
             (data.events.length === 0 ? (
               <p className="secondary">No leads yet.</p>

@@ -370,4 +370,14 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE lead_sources ADD COLUMN field_map TEXT NOT NULL DEFAULT '{}';
   ALTER TABLE lead_sources ADD COLUMN fields_seen TEXT NOT NULL DEFAULT '[]';
   `,
+  // 9: business-wide rules for custom fields: a renamed field (old key -> new key), or a field that
+  // goes into the name/email, or is not saved. Applied to new leads and imports.
+  `
+  CREATE TABLE field_rules (
+    key TEXT PRIMARY KEY,
+    target TEXT NOT NULL CHECK (target IN ('rename', 'name', 'email', 'ignore')),
+    rename_to TEXT,
+    updated_at TEXT NOT NULL
+  );
+  `,
 ];

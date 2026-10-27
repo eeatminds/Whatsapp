@@ -5,7 +5,7 @@ import { badRequest, notFound } from '../lib/errors.js';
 import { randomToken, safeEqual } from '../lib/crypto.js';
 import { chatIdFor, formatPhone, normalizePhone, type PhoneResult } from '../lib/phone.js';
 import type { SettingsService } from './settings.js';
-import type { ContactsService } from './contacts.js';
+import type { ContactsService, FieldRule } from './contacts.js';
 import type { TagsService } from './tags.js';
 import type { SequencesService } from './sequences.js';
 import type { OutboxService } from './outbox.js';
@@ -94,7 +94,7 @@ const fieldMapSchema = z.record(z.string().regex(/^[a-z0-9_]{1,40}$/), z.enum(FI
 export const fieldsInputSchema = z.object({ fieldMap: fieldMapSchema });
 
 // Matched against the cleaned column name with spaces, e.g. "student name", "mob no".
-const PHONE_KEY = /(phone|mobile|\bmob\b|whats ?app|contact ?(no|num|number)|^contact$|^number$|^tel$|telephone|\bcell\b|\bph\b)/;
+const PHONE_KEY = /(phone|mobile|\bmob\b|whats ?app|contact ?(no|num|number)|^contact$|^number$|\btel\b|telephone|\bcell\b|\bph\b)/;
 const COUNTRY_CODE_KEY = /(country ?(code|dial|calling)|dial(l?ing)? ?code|calling ?code|\bisd\b|^cc$|phone ?code|^code$|^country$)/;
 const COUNTRY_CODE_VALUE = /^\s*(\+?\d{1,4}|[a-z]{2}|.*\(\s*\+?\d{1,4}\s*\).*|.*\+\d{1,4}.*)\s*$/i;
 const EMAIL_KEY = /(e ?mail|mail ?id|^mail$)/;
@@ -115,6 +115,15 @@ export function cleanKey(key: string): string {
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 40);
+}
+
+/** Dates as Google Sheets/JavaScript print them ("Tue Oct 27 2026 00:00:00 GMT+0530 (...)") become "27 Oct 2026". */
+const JS_DATE = /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{2}) (\d{4}) (\d{2}):(\d{2}):\d{2} GMT[+-]\d{4}(?: \([^)]*\))?$/;
+export function tidyValue(value: string): string {
+  const m = JS_DATE.exec(value);
+  if (!m) return value;
+  const date = `${Number(m[2])} ${m[1]} ${m[3]}`;
+  return m[4] === '00' && m[5] === '00' ? date : `${date} ${m[4]}:${m[5]}`;
 }
 
 /** A phone number, using a separate country-code column ("+91", "91", "IN", "India (+91)") when there is one. */
@@ -196,7 +205,7 @@ export function parseLead(input: unknown, defaultCountry: string, fieldMap: Fiel
   const pairs: Array<{ key: string; value: string }> = [];
   for (const [rawKey, rawValue] of flattenLead(input)) {
     const key = cleanKey(rawKey);
-    const value = rawValue.trim();
+    const value = tidyValue(rawValue.trim());
     if (!key || !value || RESERVED.test(key) || seen.has(key)) continue;
     seen.add(key);
     pairs.push({ key, value });
@@ -381,6 +390,13 @@ export class LeadsService {
     return this.get(sourceId);
   }
 
+  /** The source's own column choices, on top of the business-wide field rules. */
+  private effectiveMap(source: LeadSource, rules: Record<string, FieldRule>): FieldMap {
+    const map: FieldMap = {};
+    for (const [key, rule] of Object.entries(rules)) if (rule.target !== 'rename') map[key] = rule.target;
+    return { ...map, ...source.fieldMap };
+  }
+
   private rememberFields(source: LeadSource, lead: ParsedLead): void {
     const seen = new Map(source.fieldsSeen.map(f => [f.key, f.as]));
     for (const key of lead.fields) seen.set(key, lead.roles[key] ?? 'custom');
@@ -404,15 +420,17 @@ export class LeadsService {
    */
   repair(sourceId?: number): number {
     const country = this.settings.get().defaultCountry;
+    const rules = this.contacts.fieldRules();
     let fixed = 0;
     for (const source of sourceId ? [this.get(sourceId)] : this.list()) {
+      const fieldMap = this.effectiveMap(source, rules);
       const rows = this.core.db.all<{ id: number; name: string | null; email: string | null; attributes: string }>(
         "SELECT id, name, email, attributes FROM contacts WHERE lead_source_id = ? AND (name IS NULL OR name = '' OR email IS NULL OR email = '') AND attributes != '{}'",
         source.id,
       );
       for (const row of rows) {
         const attrs = parseJson<Record<string, string>>(row.attributes, {});
-        const parsed = parseLead(attrs, country, source.fieldMap);
+        const parsed = parseLead(attrs, country, fieldMap);
         let name = row.name || null;
         let email = row.email || null;
         if (!name && parsed.name) {
@@ -429,6 +447,38 @@ export class LeadsService {
       }
     }
     return fixed;
+  }
+
+  /**
+   * For the Columns screen: an example value per column, from this source's latest leads, and how
+   * many of its leads still have no name or email.
+   */
+  columnInfo(sourceId: number): { samples: Record<string, string>; leads: number; missingName: number; missingEmail: number } {
+    const source = this.get(sourceId);
+    const rules = this.contacts.fieldRules();
+    const rows = this.core.db.all<{ phone: string; name: string | null; email: string | null; attributes: string }>(
+      'SELECT phone, name, email, attributes FROM contacts WHERE lead_source_id = ? ORDER BY id DESC LIMIT 25',
+      sourceId,
+    );
+    const samples: Record<string, string> = {};
+    for (const { key, as } of source.fieldsSeen) {
+      const stored = rules[key]?.target === 'rename' && rules[key].renameTo ? rules[key].renameTo! : key;
+      for (const row of rows) {
+        const value =
+          as === 'phone' ? `+${row.phone}` : as === 'email' ? row.email : as === 'name' ? row.name : parseJson<Record<string, string>>(row.attributes, {})[stored];
+        if (value) {
+          samples[key] = value.slice(0, 60);
+          break;
+        }
+      }
+    }
+    const counts = this.core.db.get<{ leads: number; missingName: number; missingEmail: number }>(
+      `SELECT COUNT(*) AS leads, SUM(CASE WHEN name IS NULL OR trim(name) = '' THEN 1 ELSE 0 END) AS missingName,
+              SUM(CASE WHEN email IS NULL OR trim(email) = '' THEN 1 ELSE 0 END) AS missingEmail
+         FROM contacts WHERE lead_source_id = ?`,
+      sourceId,
+    );
+    return { samples, leads: counts?.leads ?? 0, missingName: counts?.missingName ?? 0, missingEmail: counts?.missingEmail ?? 0 };
   }
 
   events(sourceId: number, limit = 50) {
@@ -477,8 +527,10 @@ export class LeadsService {
     payload: unknown,
   ): { ok: true; contactId: number; created: boolean; duplicate: boolean } | { ok: false; error: string } {
     const settings = this.settings.get();
-    const lead = parseLead(payload, settings.defaultCountry, source.fieldMap);
+    const rules = this.contacts.fieldRules();
+    const lead = parseLead(payload, settings.defaultCountry, this.effectiveMap(source, rules));
     this.rememberFields(source, lead);
+    lead.attributes = this.contacts.applyFieldRenames(lead.attributes, rules);
     if (!lead.phone) {
       const error = lead.fields.length
         ? `No valid phone number found. Fields received: ${lead.fields.slice(0, 12).join(', ')}. Name the phone column "Phone".`
