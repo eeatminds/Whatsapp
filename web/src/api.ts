@@ -164,6 +164,9 @@ export interface ContactFilter {
   segmentId?: number;
   stage?: LeadStage;
   channel?: string;
+  /** Custom field key, optionally with a value it must contain. */
+  field?: string;
+  fieldValue?: string;
   from?: string;
   to?: string;
   ids?: number[];

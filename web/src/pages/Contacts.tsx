@@ -41,6 +41,59 @@ import { displayName, formatDateTime, formatNumber, formatPhone, relativeTime } 
 import { StagePill } from './Leads';
 
 const AUDIENCE_HANDOFF = 'wa-reach:audience';
+const COLUMNS_KEY = 'wa-reach:contact-columns';
+
+/** "course_interested" → "Course interested". */
+export function fieldLabel(key: string): string {
+  const words = key.replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Custom fields shown as columns, remembered in this browser. */
+function useStoredColumns(): [string[], (next: string[]) => void] {
+  const [columns, setColumns] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(COLUMNS_KEY) ?? '[]');
+      return Array.isArray(saved) ? saved.filter((k): k is string => typeof k === 'string').slice(0, 12) : [];
+    } catch {
+      return [];
+    }
+  });
+  const save = (next: string[]) => {
+    setColumns(next);
+    try {
+      localStorage.setItem(COLUMNS_KEY, JSON.stringify(next));
+    } catch {
+      // Private window or blocked storage: the choice lasts for this visit only.
+    }
+  };
+  return [columns, save];
+}
+
+function ColumnPicker({ keys, value, onChange }: { keys: string[]; value: string[]; onChange: (next: string[]) => void }) {
+  const chosen = value.filter(k => keys.includes(k));
+  return (
+    <details className="col-picker">
+      <summary className="btn sm">Columns{chosen.length ? ` (${chosen.length})` : ''}</summary>
+      <div className="col-picker-panel">
+        <div className="small muted" style={{ marginBottom: 6 }}>
+          Show custom fields as columns
+        </div>
+        {keys.map(k => (
+          <label key={k} className="row" style={{ gap: 8, padding: '3px 0', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={chosen.includes(k)}
+              disabled={!chosen.includes(k) && chosen.length >= 12}
+              onChange={e => onChange(e.target.checked ? [...chosen, k] : chosen.filter(c => c !== k))}
+            />
+            {fieldLabel(k)}
+          </label>
+        ))}
+      </div>
+    </details>
+  );
+}
 
 function toQuery(filter: ContactFilter, extra: Record<string, string | number> = {}): string {
   const params = new URLSearchParams();
@@ -629,11 +682,21 @@ export function ContactsPage() {
   const [bulk, setBulk] = useState<'add_tags' | 'remove_tags' | 'set_consent' | 'enroll' | null>(null);
   const { data: tags } = useTags();
   const { data: segments } = useApi<Segment[]>('/api/segments');
+  const { data: attributeData } = useApi<{ keys: string[] }>('/api/contacts/attributes');
+  const fieldKeys = attributeData?.keys ?? [];
+  const [columns, setColumns] = useStoredColumns();
+  const shownColumns = columns.filter(k => fieldKeys.includes(k));
+  const [fieldText, setFieldText] = useState('');
 
   useEffect(() => {
     const timer = setTimeout(() => setSearch(q), 250);
     return () => clearTimeout(timer);
   }, [q]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setFilter(f => ({ ...f, fieldValue: fieldText.trim() || undefined })), 300);
+    return () => clearTimeout(timer);
+  }, [fieldText]);
 
   const activeFilter = useMemo<ContactFilter>(() => ({ ...filter, q: search || undefined }), [filter, search]);
   useEffect(() => {
@@ -718,6 +781,35 @@ export function ContactsPage() {
                 </option>
               ))}
             </select>
+            {fieldKeys.length > 0 && (
+              <select
+                className="select sm"
+                style={{ width: 'auto' }}
+                value={filter.field ?? ''}
+                onChange={e => {
+                  setFieldText('');
+                  setFilter({ ...filter, field: e.target.value || undefined, fieldValue: undefined });
+                }}
+                aria-label="Filter by custom field"
+              >
+                <option value="">Any custom field</option>
+                {fieldKeys.map(k => (
+                  <option key={k} value={k}>
+                    {fieldLabel(k)}
+                  </option>
+                ))}
+              </select>
+            )}
+            {filter.field && (
+              <input
+                className="input sm"
+                style={{ width: 160 }}
+                value={fieldText}
+                onChange={e => setFieldText(e.target.value)}
+                placeholder={`${fieldLabel(filter.field)} contains…`}
+                aria-label={`${fieldLabel(filter.field)} contains`}
+              />
+            )}
             {hasFilters && (
               <Button
                 size="sm"
@@ -725,13 +817,17 @@ export function ContactsPage() {
                 onClick={() => {
                   setFilter({});
                   setQ('');
+                  setFieldText('');
                 }}
               >
                 Clear
               </Button>
             )}
           </div>
-          <span className="muted small">{data ? `${formatNumber(data.total)} contacts` : ''}</span>
+          <div className="row">
+            {fieldKeys.length > 0 && <ColumnPicker keys={fieldKeys} value={columns} onChange={setColumns} />}
+            <span className="muted small">{data ? `${formatNumber(data.total)} contacts` : ''}</span>
+          </div>
         </div>
         {selectionCount > 0 && (
           <div className="card-header" style={{ background: 'var(--brand-soft)', flexWrap: 'wrap' }}>
@@ -822,6 +918,9 @@ export function ContactsPage() {
                     <th>Contact</th>
                     <th>Lead stage</th>
                     <th>Tags</th>
+                    {shownColumns.map(k => (
+                      <th key={k}>{fieldLabel(k)}</th>
+                    ))}
                     <th>Consent</th>
                     <th>WhatsApp</th>
                     <th>Last message in</th>
@@ -860,6 +959,11 @@ export function ContactsPage() {
                           {c.tags.length > 3 && <span className="small muted">+{c.tags.length - 3}</span>}
                         </div>
                       </td>
+                      {shownColumns.map(k => (
+                        <td key={k} className="small cell-clip" title={c.attributes[k]}>
+                          {c.attributes[k] || <span className="muted">–</span>}
+                        </td>
+                      ))}
                       <td>
                         <ConsentBadge consent={c.consent} />
                       </td>

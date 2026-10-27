@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { del, patch, post, useApi, errorMessage, type Sequence } from '../api';
+import { del, patch, post, put, useApi, errorMessage, type Sequence } from '../api';
 import { Badge, Button, Callout, Card, Empty, ErrorNote, Field, Loading, Modal, Segmented, Toggle, useConfirm, useToast } from '../components/ui';
 import { IconPlus } from '../components/icons';
 import { TagPicker } from '../components/pickers';
@@ -16,10 +16,118 @@ interface LeadSource {
   actions: { tagIds: number[]; sequenceId?: number | null; markOptedIn: boolean; notifyPhone?: string | null };
   thankYouUrl: string | null;
   url: string | null;
+  fieldMap: Record<string, FieldTarget>;
+  fieldsSeen: Array<{ key: string; as: FieldTarget }>;
   received: number;
   failed: number;
   lastReceivedAt: string | null;
   createdAt: string;
+}
+
+type FieldTarget = 'phone' | 'country_code' | 'name' | 'first_name' | 'last_name' | 'email' | 'custom' | 'ignore';
+
+const TARGET_LABEL: Record<FieldTarget, string> = {
+  phone: 'Phone number',
+  country_code: 'Country code',
+  name: 'Full name',
+  first_name: 'First name',
+  last_name: 'Last name',
+  email: 'Email',
+  custom: 'Custom field',
+  ignore: "Don't save",
+};
+
+const columnLabel = (key: string) => {
+  const words = key.replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+};
+
+function ColumnsEditor({ source, onSaved }: { source: LeadSource; onSaved: () => void }) {
+  const toast = useToast();
+  const [map, setMap] = useState<Record<string, FieldTarget>>(source.fieldMap);
+  const [busy, setBusy] = useState(false);
+  const dirty = JSON.stringify(map) !== JSON.stringify(source.fieldMap);
+  if (source.fieldsSeen.length === 0) {
+    return <p className="secondary">The columns of your {KIND_LABEL[source.kind].toLowerCase()} show here after the first lead arrives, so you can check each one was understood.</p>;
+  }
+  return (
+    <div className="stack">
+      <p className="secondary small">
+        Each column we receive and what it is saved as. Most are recognised by their names; change any that are wrong. Custom fields show in Contacts, can be filtered
+        on, and can go into messages, e.g. <code>{'{{city}}'}</code>.
+      </p>
+      <div className="table-wrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Column</th>
+              <th>Saved as</th>
+            </tr>
+          </thead>
+          <tbody>
+            {source.fieldsSeen.map(f => (
+              <tr key={f.key}>
+                <td>
+                  {columnLabel(f.key)}
+                  {f.as === 'custom' && !map[f.key] && <div className="small muted">Custom field <code>{`{{${f.key}}}`}</code></div>}
+                </td>
+                <td style={{ minWidth: 220 }}>
+                  <select
+                    className="select sm"
+                    value={map[f.key] ?? 'auto'}
+                    aria-label={`What "${columnLabel(f.key)}" is`}
+                    onChange={e => {
+                      const next = { ...map };
+                      if (e.target.value === 'auto') delete next[f.key];
+                      else next[f.key] = e.target.value as FieldTarget;
+                      setMap(next);
+                    }}
+                  >
+                    <option value="auto">{source.fieldMap[f.key] ? 'Automatic' : `Automatic (${TARGET_LABEL[f.as]})`}</option>
+                    {(Object.keys(TARGET_LABEL) as FieldTarget[]).map(t => (
+                      <option key={t} value={t}>
+                        {TARGET_LABEL[t]}
+                      </option>
+                    ))}
+                  </select>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="row wrap">
+        <Button
+          variant="primary"
+          loading={busy}
+          disabled={!dirty}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const r = await put<{ fixed: number }>(`/api/lead-sources/${source.id}/fields`, { fieldMap: map });
+              toast.success(r.fixed ? `Saved. Fixed the name or email of ${r.fixed} lead${r.fixed === 1 ? '' : 's'} already received.` : 'Saved');
+              onSaved();
+            } catch (err) {
+              toast.error(errorMessage(err));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Save columns
+        </Button>
+        {dirty && (
+          <Button variant="ghost" onClick={() => setMap(source.fieldMap)}>
+            Undo changes
+          </Button>
+        )}
+      </div>
+      <p className="hint">
+        Saving also fixes leads already received: a name or email that was kept as a custom field moves to the right place. To send sheet rows again, clear their
+        WA Status cells. A number that is already saved is never added twice; only its missing name, email or fields are filled in.
+      </p>
+    </div>
+  );
 }
 
 interface LeadEvent {
@@ -120,6 +228,7 @@ function SetupSteps({ source }: { source: LeadSource }) {
             <strong>Minutes timer</strong>, <strong>Every minute</strong> → Save. Allow access when Google asks.
           </li>
           <li>Add a test row with your own number. Within a minute a <strong>WA Status</strong> column shows “Sent to WA Reach” and the lead appears below.</li>
+          <li>Open <strong>Columns</strong> here to check the name, email and your other columns came through as you expect.</li>
         </ol>
         <CodeBlock code={sheetScript(url)} />
         <p className="hint">Rows are sent once. To resend a row, clear its WA Status cell.</p>
@@ -273,7 +382,7 @@ function SourceEditor({ source, onClose, onSaved }: { source: LeadSource | null;
 
 function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: number; onClose: () => void; onEdit: (s: LeadSource) => void; onChanged: () => void }) {
   const { data, error, reload } = useApi<{ source: LeadSource; events: LeadEvent[] }>(`/api/lead-sources/${sourceId}`, { poll: 5000 });
-  const [view, setView] = useState<'setup' | 'leads'>('setup');
+  const [view, setView] = useState<'setup' | 'columns' | 'leads'>('setup');
   const { confirm, dialog } = useConfirm();
   const toast = useToast();
   const source = data?.source;
@@ -330,10 +439,12 @@ function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: numb
             onChange={setView}
             options={[
               { value: 'setup', label: `How to connect ${KIND_LABEL[source.kind]}` },
+              { value: 'columns', label: `Columns (${source.fieldsSeen.length})` },
               { value: 'leads', label: `Recent leads (${data.events.length})` },
             ]}
           />
           {view === 'setup' && source.url && <SetupSteps source={source} />}
+          {view === 'columns' && <ColumnsEditor key={JSON.stringify(source.fieldMap)} source={source} onSaved={() => void reload()} />}
           {view === 'leads' &&
             (data.events.length === 0 ? (
               <p className="secondary">No leads yet.</p>

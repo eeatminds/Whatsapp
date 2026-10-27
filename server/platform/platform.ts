@@ -647,6 +647,13 @@ export class Platform {
     const runtime: TenantRuntime = { tenantId: tenant, core, services, scope, running: false };
     this.runtimes.set(tenant, runtime);
     services.dispatcher.recover();
+    // Leads that came in before their name/email columns were recognised get them filled in.
+    try {
+      const fixed = services.leads.repair();
+      if (fixed) this.log.info(`Filled in names/emails for ${fixed} leads of ${tenant}`);
+    } catch (error) {
+      this.log.warn(`Could not tidy leads for ${tenant}: ${error instanceof Error ? error.message : String(error)}`);
+    }
     return runtime;
   }
 

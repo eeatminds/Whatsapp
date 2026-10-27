@@ -3,7 +3,7 @@ import type { Core } from '../context.js';
 import { nowIso, parseJson } from '../db/database.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { randomToken, safeEqual } from '../lib/crypto.js';
-import { chatIdFor, formatPhone, normalizePhone } from '../lib/phone.js';
+import { chatIdFor, formatPhone, normalizePhone, type PhoneResult } from '../lib/phone.js';
 import type { SettingsService } from './settings.js';
 import type { ContactsService } from './contacts.js';
 import type { TagsService } from './tags.js';
@@ -54,6 +54,8 @@ interface SourceRow {
   active: number;
   actions: string;
   thank_you_url: string | null;
+  field_map: string;
+  fields_seen: string;
   received: number;
   failed: number;
   last_received_at: string | null;
@@ -68,6 +70,10 @@ export interface LeadSource {
   active: boolean;
   actions: LeadActions;
   thankYouUrl: string | null;
+  /** What the business said each column is (columns not listed are detected automatically). */
+  fieldMap: FieldMap;
+  /** Columns this source has sent, and what each became last time. */
+  fieldsSeen: Array<{ key: string; as: FieldTarget }>;
   url: string | null;
   received: number;
   failed: number;
@@ -75,23 +81,63 @@ export interface LeadSource {
   createdAt: string;
 }
 
-const MAX_ATTRIBUTES = 20;
-const RESERVED = /^(token|secret|password|api[_-]?key|g-recaptcha-response|_.*)$/i;
-const PHONE_KEY = /(phone|mobile|whats ?app|contact ?(no|number)|^number$|^tel$|cell)/i;
-const EMAIL_KEY = /e-?mail/i;
-const NAME_KEY = /^(full ?name|your ?name|name|customer ?name|contact ?name)$/i;
-const FIRST_KEY = /^(first ?name|fname|given ?name)$/i;
-const LAST_KEY = /^(last ?name|lname|surname|family ?name)$/i;
+const MAX_ATTRIBUTES = 50;
+const RESERVED = /^(token|secret|password|api_key|g_recaptcha_response|wa_status)$|^_/;
+/** Joins nested keys from JSON payloads; a header like "Mob. No." keeps its dots. */
+const PATH_SEP = '\u001f';
 
-/** Human-friendly key: "your-city" / "Your City" / "data.city" → "your_city" / "city". */
-function cleanKey(key: string): string {
-  const last = key.split('.').pop() ?? key;
+/** What a column becomes. "custom" keeps it as a custom field; "ignore" drops it. */
+export const FIELD_TARGETS = ['phone', 'country_code', 'name', 'first_name', 'last_name', 'email', 'custom', 'ignore'] as const;
+export type FieldTarget = (typeof FIELD_TARGETS)[number];
+export type FieldMap = Record<string, FieldTarget>;
+const fieldMapSchema = z.record(z.string().regex(/^[a-z0-9_]{1,40}$/), z.enum(FIELD_TARGETS)).refine(m => Object.keys(m).length <= 100, 'Too many columns');
+export const fieldsInputSchema = z.object({ fieldMap: fieldMapSchema });
+
+// Matched against the cleaned column name with spaces, e.g. "student name", "mob no".
+const PHONE_KEY = /(phone|mobile|\bmob\b|whats ?app|contact ?(no|num|number)|^contact$|^number$|^tel$|telephone|\bcell\b|\bph\b)/;
+const COUNTRY_CODE_KEY = /(country ?(code|dial|calling)|dial(l?ing)? ?code|calling ?code|\bisd\b|^cc$|phone ?code|^code$|^country$)/;
+const COUNTRY_CODE_VALUE = /^\s*(\+?\d{1,4}|[a-z]{2}|.*\(\s*\+?\d{1,4}\s*\).*|.*\+\d{1,4}.*)\s*$/i;
+const EMAIL_KEY = /(e ?mail|mail ?id|^mail$)/;
+const EMAIL_VALUE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const NAME_KEY = /^((your |full |your full )?name|(customer|contact|lead|client|student|candidate|applicant|patient|person|buyer|guest|visitor) ?name|enter your name|what is your name)$/;
+const FIRST_KEY = /^(first ?name|fname|given ?name|forename)$/;
+const LAST_KEY = /^(last ?name|lname|surname|family ?name)$/;
+/** "<something> name" columns that are not the person: ad/campaign/form names, course, company... */
+const NOT_A_PERSON =
+  /\b(ad|ads|adset|set|campaign|form|page|company|business|firm|brand|course|program|programme|product|plan|school|college|university|institute|organi[sz]ation|org|file|user|platform|city|state|country|father|mother|parent|guardian|spouse|husband|wife|reference|referrer|referral|agent|executive|counsell?or|sales|owner|project|event|item|service|branch|centre|center|domain|site|website|account|group|team|batch|class|subject|hospital|doctor|clinic|shop|store|restaurant|middle|nick|display)\b/;
+
+/** Human-friendly key: "Your City" / "data.city" (nested JSON) / "Mob. No." → "your_city" / "city" / "mob_no". */
+export function cleanKey(key: string): string {
+  const last = key.split(PATH_SEP).pop() ?? key;
   return last
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 40);
+}
+
+/** A phone number, using a separate country-code column ("+91", "91", "IN", "India (+91)") when there is one. */
+export function phoneWithCountry(value: string, countryCode: string | null, defaultCountry: string): PhoneResult {
+  const raw = value.trim();
+  const international = raw.startsWith('+') || raw.replace(/[^\d+]/g, '').startsWith('00');
+  if (countryCode && !international) {
+    const cc = countryCode.trim();
+    if (/^[a-z]{2}$/i.test(cc)) {
+      const local = normalizePhone(raw, cc.toUpperCase());
+      if (local.ok) return local;
+    }
+    const dial = /\+\s*(\d{1,4})/.exec(cc)?.[1] ?? /^(\d{1,4})$/.exec(cc)?.[1] ?? /\((\d{1,4})\)/.exec(cc)?.[1];
+    if (dial) {
+      const digits = raw.replace(/\D/g, '').replace(/^0+/, '');
+      const tries = digits.startsWith(dial) ? [`+${digits}`, `+${dial}${digits}`] : [`+${dial}${digits}`, `+${digits}`];
+      for (const attempt of tries) {
+        const result = normalizePhone(attempt, defaultCountry);
+        if (result.ok) return result;
+      }
+    }
+  }
+  return normalizePhone(raw, defaultCountry);
 }
 
 /**
@@ -116,7 +162,7 @@ export function flattenLead(input: unknown, prefix = '', depth = 0, out: Array<[
   }
   if (typeof input === 'object') {
     for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
-      const path = prefix ? `${prefix}.${key}` : key;
+      const path = prefix ? `${prefix}${PATH_SEP}${key}` : key;
       if (value !== null && typeof value === 'object') flattenLead(value, path, depth + 1, out);
       else if (value !== undefined && value !== null) out.push([path, String(value)]);
     }
@@ -131,39 +177,94 @@ export interface ParsedLead {
   name: string | null;
   email: string | null;
   attributes: Record<string, string>;
+  /** Every column received (cleaned names), in order. */
   fields: string[];
+  /** What each column became, for the source's Columns screen. */
+  roles: Record<string, FieldTarget>;
+  /** Columns that made up the name / held the email (used to tidy custom fields). */
+  nameKeys: string[];
+  emailKey: string | null;
 }
 
-export function parseLead(input: unknown, defaultCountry: string): ParsedLead {
-  const pairs = flattenLead(input)
-    .map(([key, value]) => [key, value.trim()] as [string, string])
-    .filter(([key, value]) => value !== '' && !RESERVED.test(cleanKey(key)));
+/**
+ * Work out phone, name and email from whatever columns a form or sheet sends. A business can say
+ * what a column is (`fieldMap`); other columns are recognised by their names (and emails by their
+ * values). Everything else is kept as custom fields.
+ */
+export function parseLead(input: unknown, defaultCountry: string, fieldMap: FieldMap = {}): ParsedLead {
+  const seen = new Set<string>();
+  const pairs: Array<{ key: string; value: string }> = [];
+  for (const [rawKey, rawValue] of flattenLead(input)) {
+    const key = cleanKey(rawKey);
+    const value = rawValue.trim();
+    if (!key || !value || RESERVED.test(key) || seen.has(key)) continue;
+    seen.add(key);
+    pairs.push({ key, value });
+  }
+  const roles: Record<string, FieldTarget> = {};
+  const words = (key: string) => key.replace(/_/g, ' ');
+  const free = (key: string) => !fieldMap[key] && !roles[key];
+  const take = (key: string, role: FieldTarget) => (roles[key] = role);
+  const mapped = (target: FieldTarget) => pairs.filter(p => fieldMap[p.key] === target);
+
+  // Country code first, so the phone can use it.
+  const ccPair = mapped('country_code')[0] ?? pairs.find(p => free(p.key) && COUNTRY_CODE_KEY.test(words(p.key)) && COUNTRY_CODE_VALUE.test(p.value));
+  if (ccPair) take(ccPair.key, 'country_code');
+
   let phone: string | null = null;
-  let phoneKey: string | null = null;
-  for (const [key, value] of pairs) {
-    if (!PHONE_KEY.test(cleanKey(key).replace(/_/g, ' '))) continue;
-    const normalized = normalizePhone(value, defaultCountry);
-    if (normalized.ok) {
-      phone = normalized.phone;
-      phoneKey = key;
+  const phoneCandidates = mapped('phone').length ? mapped('phone') : pairs.filter(p => free(p.key) && PHONE_KEY.test(words(p.key)));
+  for (const p of phoneCandidates) {
+    const result = phoneWithCountry(p.value, ccPair?.value ?? null, defaultCountry);
+    if (result.ok) {
+      phone = result.phone;
+      take(p.key, 'phone');
       break;
     }
   }
-  const find = (pattern: RegExp) => pairs.find(([key]) => pattern.test(cleanKey(key).replace(/_/g, ' ')));
-  const full = find(NAME_KEY)?.[1];
-  const first = find(FIRST_KEY)?.[1];
-  const last = find(LAST_KEY)?.[1];
-  const name = (full || [first, last].filter(Boolean).join(' ')).slice(0, 120) || null;
-  const emailPair = pairs.find(([key, value]) => EMAIL_KEY.test(key) && /^\S+@\S+\.\S+$/.test(value));
-  const used = new Set([phoneKey, find(NAME_KEY)?.[0], find(FIRST_KEY)?.[0], find(LAST_KEY)?.[0], emailPair?.[0]]);
-  const attributes: Record<string, string> = {};
-  for (const [key, value] of pairs) {
-    if (used.has(key)) continue;
-    const clean = cleanKey(key);
-    if (!clean || clean in attributes || Object.keys(attributes).length >= MAX_ATTRIBUTES) continue;
-    attributes[clean] = value.slice(0, 300);
+
+  const emailPair =
+    mapped('email').find(p => EMAIL_VALUE.test(p.value)) ??
+    pairs.find(p => free(p.key) && EMAIL_KEY.test(words(p.key)) && EMAIL_VALUE.test(p.value)) ??
+    pairs.find(p => free(p.key) && EMAIL_VALUE.test(p.value));
+  if (emailPair) take(emailPair.key, 'email');
+
+  const fullPair =
+    mapped('name')[0] ?? pairs.find(p => free(p.key) && NAME_KEY.test(words(p.key)));
+  const firstPair = mapped('first_name')[0] ?? pairs.find(p => free(p.key) && FIRST_KEY.test(words(p.key)));
+  const lastPair = mapped('last_name')[0] ?? pairs.find(p => free(p.key) && LAST_KEY.test(words(p.key)));
+  // Last resort: a "<something> name" column that is about the person, e.g. "Name of the student".
+  const loosePair =
+    !fullPair && !firstPair && !lastPair
+      ? pairs.find(p => free(p.key) && /\bname\b/.test(words(p.key)) && !NOT_A_PERSON.test(words(p.key)))
+      : undefined;
+  const nameParts = fullPair || loosePair ? [fullPair ?? loosePair!] : [firstPair, lastPair].filter((p): p is { key: string; value: string } => !!p);
+  if (fullPair || loosePair) take((fullPair ?? loosePair)!.key, 'name');
+  if (!fullPair && !loosePair) {
+    if (firstPair) take(firstPair.key, 'first_name');
+    if (lastPair) take(lastPair.key, 'last_name');
   }
-  return { phone, name, email: emailPair?.[1].slice(0, 200) ?? null, attributes, fields: pairs.map(([key]) => cleanKey(key)).filter(Boolean) };
+  const name = nameParts.map(p => p.value).join(' ').replace(/\s+/g, ' ').slice(0, 120) || null;
+
+  const attributes: Record<string, string> = {};
+  for (const p of pairs) {
+    if (roles[p.key]) continue;
+    if (fieldMap[p.key] === 'ignore') {
+      take(p.key, 'ignore');
+      continue;
+    }
+    take(p.key, 'custom');
+    if (Object.keys(attributes).length < MAX_ATTRIBUTES) attributes[p.key] = p.value.slice(0, 300);
+  }
+  return {
+    phone,
+    name,
+    email: emailPair?.value.slice(0, 200) ?? null,
+    attributes,
+    fields: pairs.map(p => p.key),
+    roles,
+    nameKeys: nameParts.map(p => p.key),
+    emailKey: emailPair?.key ?? null,
+  };
 }
 
 export class LeadsService {
@@ -193,6 +294,8 @@ export class LeadsService {
       active: !!row.active,
       actions: actionsSchema.parse(parseJson(row.actions, {})),
       thankYouUrl: row.thank_you_url,
+      fieldMap: fieldMapSchema.catch({}).parse(parseJson(row.field_map, {})),
+      fieldsSeen: parseJson<Array<{ key: string; as: FieldTarget }>>(row.fields_seen, []),
       url: this.url(row.token),
       received: row.received,
       failed: row.failed,
@@ -278,6 +381,56 @@ export class LeadsService {
     return this.get(sourceId);
   }
 
+  private rememberFields(source: LeadSource, lead: ParsedLead): void {
+    const seen = new Map(source.fieldsSeen.map(f => [f.key, f.as]));
+    for (const key of lead.fields) seen.set(key, lead.roles[key] ?? 'custom');
+    const next = [...seen].slice(-60).map(([key, as]) => ({ key, as }));
+    const json = JSON.stringify(next);
+    if (json !== JSON.stringify(source.fieldsSeen)) this.core.db.run('UPDATE lead_sources SET fields_seen = ? WHERE id = ?', json, source.id);
+  }
+
+  /** Save what each column is, then fix leads already received with the new choices. */
+  setFields(sourceId: number, input: unknown): { source: LeadSource; fixed: number } {
+    this.row(sourceId);
+    const { fieldMap } = fieldsInputSchema.parse(input);
+    if (Object.values(fieldMap).filter(t => t === 'phone').length > 1) throw badRequest('Choose one phone column');
+    this.core.db.run('UPDATE lead_sources SET field_map = ?, updated_at = ? WHERE id = ?', JSON.stringify(fieldMap), this.now(), sourceId);
+    return { source: this.get(sourceId), fixed: this.repair(sourceId) };
+  }
+
+  /**
+   * Leads that arrived without a name or email but carry one in a custom field (a column that was
+   * not recognised then) get it moved into the right place. Only blanks are filled.
+   */
+  repair(sourceId?: number): number {
+    const country = this.settings.get().defaultCountry;
+    let fixed = 0;
+    for (const source of sourceId ? [this.get(sourceId)] : this.list()) {
+      const rows = this.core.db.all<{ id: number; name: string | null; email: string | null; attributes: string }>(
+        "SELECT id, name, email, attributes FROM contacts WHERE lead_source_id = ? AND (name IS NULL OR name = '' OR email IS NULL OR email = '') AND attributes != '{}'",
+        source.id,
+      );
+      for (const row of rows) {
+        const attrs = parseJson<Record<string, string>>(row.attributes, {});
+        const parsed = parseLead(attrs, country, source.fieldMap);
+        let name = row.name || null;
+        let email = row.email || null;
+        if (!name && parsed.name) {
+          name = parsed.name;
+          for (const key of parsed.nameKeys) delete attrs[key];
+        }
+        if (!email && parsed.email && parsed.emailKey) {
+          email = parsed.email;
+          delete attrs[parsed.emailKey];
+        }
+        if (name === (row.name || null) && email === (row.email || null)) continue;
+        this.core.db.run('UPDATE contacts SET name = ?, email = ?, attributes = ?, updated_at = ? WHERE id = ?', name, email, JSON.stringify(attrs), this.now(), row.id);
+        fixed++;
+      }
+    }
+    return fixed;
+  }
+
   events(sourceId: number, limit = 50) {
     this.row(sourceId);
     return this.core.db
@@ -324,7 +477,8 @@ export class LeadsService {
     payload: unknown,
   ): { ok: true; contactId: number; created: boolean; duplicate: boolean } | { ok: false; error: string } {
     const settings = this.settings.get();
-    const lead = parseLead(payload, settings.defaultCountry);
+    const lead = parseLead(payload, settings.defaultCountry, source.fieldMap);
+    this.rememberFields(source, lead);
     if (!lead.phone) {
       const error = lead.fields.length
         ? `No valid phone number found. Fields received: ${lead.fields.slice(0, 12).join(', ')}. Name the phone column "Phone".`
@@ -335,7 +489,9 @@ export class LeadsService {
     const existing = this.contacts.findByPhone(lead.phone);
     if (existing) {
       const since = existing.created_at.slice(0, 10);
-      this.logEvent(source.id, 'duplicate', existing.id, `Already a lead since ${since}; kept the first details`);
+      // Never a second contact or a second welcome; only blanks (no name yet, say) are filled in.
+      const filled = this.contacts.fillBlanks(existing.id, { name: lead.name, email: lead.email, attributes: lead.attributes });
+      this.logEvent(source.id, 'duplicate', existing.id, `Already a lead since ${since}; kept the first details${filled.length ? `, filled in ${filled.join(', ')}` : ''}`);
       return { ok: true, contactId: existing.id, created: false, duplicate: true };
     }
     const { actions } = source;

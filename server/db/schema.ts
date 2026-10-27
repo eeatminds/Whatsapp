@@ -365,4 +365,9 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE lead_events_new RENAME TO lead_events;
   CREATE INDEX lead_events_source ON lead_events (source_id, id);
   `,
+  // 8: per-source column choices (what each sheet/form column is) and the columns seen so far.
+  `
+  ALTER TABLE lead_sources ADD COLUMN field_map TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE lead_sources ADD COLUMN fields_seen TEXT NOT NULL DEFAULT '[]';
+  `,
 ];

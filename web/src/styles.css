@@ -1562,3 +1562,10 @@ table.table {
 .remark-view:hover { border-color: var(--border-strong); }
 .remark-text { white-space: pre-wrap; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .remark-edit .textarea { min-width: 220px; }
+
+/* Contacts: custom field columns */
+.col-picker { position: relative; }
+.col-picker > summary { list-style: none; cursor: pointer; }
+.col-picker > summary::-webkit-details-marker { display: none; }
+.col-picker-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; min-width: 220px; max-height: 340px; overflow: auto; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); box-shadow: var(--shadow-lg); }
+.cell-clip { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

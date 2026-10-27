@@ -174,6 +174,9 @@ export const contactFilterSchema = z.object({
     .string()
     .regex(/^(src:\d{1,9}|[a-z-]{1,20})$/)
     .optional(),
+  /** A custom field: contacts that have it, or whose value contains `fieldValue`. */
+  field: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(),
+  fieldValue: z.string().trim().max(100).optional(),
   /** Added on or after / before these dates (YYYY-MM-DD, in the business's time zone). */
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -319,6 +322,12 @@ export class ContactsService {
     }
     if (filter.consent) parts.push({ sql: 'c.consent = ?', params: [filter.consent] });
     if (filter.stage) parts.push({ sql: 'c.lead_stage = ?', params: [filter.stage] });
+    if (filter.field) {
+      // The key is limited to [a-z0-9_], so it is safe inside the JSON path.
+      const value = `json_extract(c.attributes, '$.${filter.field}')`;
+      if (filter.fieldValue) parts.push({ sql: `CAST(${value} AS TEXT) LIKE ? ESCAPE '\\'`, params: [`%${escapeLike(filter.fieldValue)}%`] });
+      else parts.push({ sql: `${value} IS NOT NULL AND ${value} != ''`, params: [] });
+    }
     if (filter.channel) {
       if (filter.channel.startsWith('src:')) parts.push({ sql: 'c.lead_source_id = ?', params: [Number(filter.channel.slice(4))] });
       else parts.push({ sql: 'c.lead_source_id IS NULL AND c.source = ?', params: [filter.channel] });
@@ -617,6 +626,31 @@ export class ContactsService {
       this.core.db.run('UPDATE contacts SET updated_at = ? WHERE id = ?', now, contactId);
     });
     return this.get(contactId);
+  }
+
+  /** Fill in only what a contact is missing (name, email, custom fields); returns what was filled. */
+  fillBlanks(contactId: number, data: { name?: string | null; email?: string | null; attributes?: Record<string, string> }): string[] {
+    const row = this.row(contactId);
+    const attrs = parseJson<Record<string, string>>(row.attributes, {});
+    const filled: string[] = [];
+    const name = !row.name && data.name ? data.name.slice(0, 120) : row.name;
+    const email = !row.email && data.email ? data.email.slice(0, 200) : row.email;
+    if (name !== row.name) filled.push('name');
+    if (email !== row.email) filled.push('email');
+    let added = 0;
+    for (const [key, value] of Object.entries(data.attributes ?? {})) {
+      const clean = normalizeAttrKey(key);
+      if (!clean || RESERVED_ATTRS.has(clean) || clean in attrs || Object.keys(attrs).length >= 100) continue;
+      const text = String(value).trim().slice(0, 500);
+      if (!text) continue;
+      attrs[clean] = text;
+      added++;
+    }
+    if (added) filled.push(`${added} custom field${added === 1 ? '' : 's'}`);
+    if (filled.length) {
+      this.core.db.run('UPDATE contacts SET name = ?, email = ?, attributes = ?, updated_at = ? WHERE id = ?', name, email, JSON.stringify(attrs), this.now(), contactId);
+    }
+    return filled;
   }
 
   /** Remember which lead source brought a new contact in (first source only). */
