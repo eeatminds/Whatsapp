@@ -73,7 +73,7 @@ export interface LeadSource {
   /** What the business said each column is (columns not listed are detected automatically). */
   fieldMap: FieldMap;
   /** Columns this source has sent, and what each became last time. */
-  fieldsSeen: Array<{ key: string; as: FieldTarget }>;
+  fieldsSeen: SeenField[];
   url: string | null;
   received: number;
   failed: number;
@@ -90,6 +90,12 @@ const PATH_SEP = '\u001f';
 export const FIELD_TARGETS = ['phone', 'country_code', 'name', 'first_name', 'last_name', 'email', 'custom', 'ignore'] as const;
 export type FieldTarget = (typeof FIELD_TARGETS)[number];
 export type FieldMap = Record<string, FieldTarget>;
+/** A column a source has sent: what it became last time, and an example value (not kept for "don't save"). */
+export interface SeenField {
+  key: string;
+  as: FieldTarget;
+  sample?: string;
+}
 const fieldMapSchema = z.record(z.string().regex(/^[a-z0-9_]{1,40}$/), z.enum(FIELD_TARGETS)).refine(m => Object.keys(m).length <= 100, 'Too many columns');
 export const fieldsInputSchema = z.object({ fieldMap: fieldMapSchema });
 
@@ -190,6 +196,8 @@ export interface ParsedLead {
   fields: string[];
   /** What each column became, for the source's Columns screen. */
   roles: Record<string, FieldTarget>;
+  /** Each column's value as received (tidied), for examples on the Columns screen. */
+  values: Record<string, string>;
   /** Columns that made up the name / held the email (used to tidy custom fields). */
   nameKeys: string[];
   emailKey: string | null;
@@ -271,6 +279,7 @@ export function parseLead(input: unknown, defaultCountry: string, fieldMap: Fiel
     attributes,
     fields: pairs.map(p => p.key),
     roles,
+    values: Object.fromEntries(pairs.map(p => [p.key, p.value])),
     nameKeys: nameParts.map(p => p.key),
     emailKey: emailPair?.key ?? null,
   };
@@ -304,7 +313,7 @@ export class LeadsService {
       actions: actionsSchema.parse(parseJson(row.actions, {})),
       thankYouUrl: row.thank_you_url,
       fieldMap: fieldMapSchema.catch({}).parse(parseJson(row.field_map, {})),
-      fieldsSeen: parseJson<Array<{ key: string; as: FieldTarget }>>(row.fields_seen, []),
+      fieldsSeen: parseJson<SeenField[]>(row.fields_seen, []),
       url: this.url(row.token),
       received: row.received,
       failed: row.failed,
@@ -398,9 +407,12 @@ export class LeadsService {
   }
 
   private rememberFields(source: LeadSource, lead: ParsedLead): void {
-    const seen = new Map(source.fieldsSeen.map(f => [f.key, f.as]));
-    for (const key of lead.fields) seen.set(key, lead.roles[key] ?? 'custom');
-    const next = [...seen].slice(-60).map(([key, as]) => ({ key, as }));
+    const seen = new Map(source.fieldsSeen.map(f => [f.key, f]));
+    for (const key of lead.fields) {
+      const as = lead.roles[key] ?? 'custom';
+      seen.set(key, as === 'ignore' ? { key, as } : { key, as, sample: lead.values[key]?.slice(0, 80) });
+    }
+    const next = [...seen.values()].slice(-60);
     const json = JSON.stringify(next);
     if (json !== JSON.stringify(source.fieldsSeen)) this.core.db.run('UPDATE lead_sources SET fields_seen = ? WHERE id = ?', json, source.id);
   }
@@ -453,21 +465,44 @@ export class LeadsService {
    * For the Columns screen: an example value per column, from this source's latest leads, and how
    * many of its leads still have no name or email.
    */
-  columnInfo(sourceId: number): { samples: Record<string, string>; leads: number; missingName: number; missingEmail: number } {
+  columnInfo(sourceId: number): {
+    samples: Record<string, string>;
+    /** The custom-field name each column is saved under (after renames). */
+    savedAs: Record<string, string>;
+    leads: number;
+    missingName: number;
+    missingEmail: number;
+  } {
     const source = this.get(sourceId);
     const rules = this.contacts.fieldRules();
+    const map = this.effectiveMap(source, rules);
     const rows = this.core.db.all<{ phone: string; name: string | null; email: string | null; attributes: string }>(
       'SELECT phone, name, email, attributes FROM contacts WHERE lead_source_id = ? ORDER BY id DESC LIMIT 25',
       sourceId,
     );
     const samples: Record<string, string> = {};
-    for (const { key, as } of source.fieldsSeen) {
+    const savedAs: Record<string, string> = {};
+    for (const { key, as, sample } of source.fieldsSeen) {
       const stored = rules[key]?.target === 'rename' && rules[key].renameTo ? rules[key].renameTo! : key;
+      savedAs[key] = stored;
+      if (sample) {
+        samples[key] = tidyValue(sample).slice(0, 60);
+        continue;
+      }
+      // Sources from before examples were kept: find one in the leads themselves.
+      const target = map[key] ?? as;
       for (const row of rows) {
+        const attrs = parseJson<Record<string, string>>(row.attributes, {});
         const value =
-          as === 'phone' ? `+${row.phone}` : as === 'email' ? row.email : as === 'name' ? row.name : parseJson<Record<string, string>>(row.attributes, {})[stored];
+          target === 'phone'
+            ? `+${row.phone}`
+            : target === 'email'
+              ? (row.email ?? attrs[stored])
+              : target === 'name' || target === 'first_name' || target === 'last_name'
+                ? (attrs[stored] ?? row.name)
+                : attrs[stored];
         if (value) {
-          samples[key] = value.slice(0, 60);
+          samples[key] = tidyValue(value).slice(0, 60);
           break;
         }
       }
@@ -478,7 +513,7 @@ export class LeadsService {
          FROM contacts WHERE lead_source_id = ?`,
       sourceId,
     );
-    return { samples, leads: counts?.leads ?? 0, missingName: counts?.missingName ?? 0, missingEmail: counts?.missingEmail ?? 0 };
+    return { samples, savedAs, leads: counts?.leads ?? 0, missingName: counts?.missingName ?? 0, missingEmail: counts?.missingEmail ?? 0 };
   }
 
   events(sourceId: number, limit = 50) {

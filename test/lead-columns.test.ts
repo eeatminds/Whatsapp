@@ -69,10 +69,10 @@ describe('lead source columns', () => {
 
     const detail = (await env.api('GET', `/api/lead-sources/${source.id}`)).body.source;
     expect(detail.fieldsSeen).toEqual([
-      { key: 'guardian_name', as: 'custom' },
-      { key: 'phone', as: 'phone' },
-      { key: 'mail', as: 'email' },
-      { key: 'course', as: 'custom' },
+      { key: 'guardian_name', as: 'custom', sample: 'Suresh' },
+      { key: 'phone', as: 'phone', sample: '9845011122' },
+      { key: 'mail', as: 'email', sample: 'suresh@example.com' },
+      { key: 'course', as: 'custom', sample: 'BBA' },
     ]);
 
     // The business says "Guardian Name" is the name: the lead already received is fixed too.

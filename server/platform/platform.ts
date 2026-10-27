@@ -10,6 +10,7 @@ import { badRequest, conflict, HttpError, notFound } from '../lib/errors.js';
 import type { OpenWAApi, OpenWASession } from '../openwa/client.js';
 import { MetaGraphClient, type MetaApi } from '../meta/client.js';
 import { createServices, type Services } from '../services/index.js';
+import { tidyValue } from '../services/leads.js';
 import type { SessionScope } from '../services/sessions.js';
 import { MARKETING_SOURCES } from '../services/messages.js';
 import { seedStarterKit } from '../services/starter-kit.js';
@@ -651,6 +652,7 @@ export class Platform {
     try {
       const fixed = services.leads.repair();
       if (fixed) this.log.info(`Filled in names/emails for ${fixed} leads of ${tenant}`);
+      services.contacts.tidyDateValues(tidyValue);
     } catch (error) {
       this.log.warn(`Could not tidy leads for ${tenant}: ${error instanceof Error ? error.message : String(error)}`);
     }

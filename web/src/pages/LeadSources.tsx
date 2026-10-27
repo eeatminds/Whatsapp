@@ -4,7 +4,7 @@ import { Badge, Button, Callout, Card, Empty, ErrorNote, Field, Loading, Modal, 
 import { IconPlus } from '../components/icons';
 import { TagPicker } from '../components/pickers';
 import { CopyField } from '../components/official';
-import { formatPhone, relativeTime } from '../format';
+import { formatDateTime, formatPhone, relativeTime } from '../format';
 
 type Kind = 'google_sheet' | 'website' | 'wix' | 'other';
 
@@ -44,103 +44,156 @@ const columnLabel = (key: string) => {
 
 interface ColumnInfo {
   samples: Record<string, string>;
+  savedAs: Record<string, string>;
   leads: number;
   missingName: number;
   missingEmail: number;
 }
 
+/** "Pincode" → "pincode", the way the server names custom fields. */
+const toKey = (name: string) =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64);
+
 function ColumnsEditor({ source, info, onSaved }: { source: LeadSource; info?: ColumnInfo; onSaved: () => void }) {
   const toast = useToast();
   const [map, setMap] = useState<Record<string, FieldTarget>>(source.fieldMap);
+  const savedName = (key: string) => info?.savedAs[key] ?? key;
+  const [names, setNames] = useState<Record<string, string>>(() =>
+    Object.fromEntries(source.fieldsSeen.map(f => [f.key, columnLabel(info?.savedAs[f.key] ?? f.key)])),
+  );
   const [busy, setBusy] = useState(false);
-  const dirty = JSON.stringify(map) !== JSON.stringify(source.fieldMap);
   if (source.fieldsSeen.length === 0) {
     return <p className="secondary">The columns of your {KIND_LABEL[source.kind].toLowerCase()} show here after the first lead arrives, so you can check each one was understood.</p>;
   }
-  const nameChosen = Object.values(map).some(t => t === 'name' || t === 'first_name');
+  const targetOf = (f: { key: string; as: FieldTarget }) => map[f.key] ?? (source.fieldMap[f.key] ? 'custom' : f.as);
+  const renamed = source.fieldsSeen.filter(f => targetOf(f) === 'custom' && toKey(names[f.key] ?? '') && toKey(names[f.key]) !== savedName(f.key));
+  const mapDirty = JSON.stringify(map) !== JSON.stringify(source.fieldMap);
+  const dirty = mapDirty || renamed.length > 0;
+  const nameChosen = source.fieldsSeen.some(f => ['name', 'first_name'].includes(targetOf(f)));
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      let fixed = 0;
+      if (mapDirty) fixed = (await put<{ fixed: number }>(`/api/lead-sources/${source.id}/fields`, { fieldMap: map })).fixed;
+      for (const f of renamed) await post('/api/contacts/fields/rename', { from: savedName(f.key), to: names[f.key] });
+      const parts = [fixed ? `fixed the name or email of ${fixed} lead${fixed === 1 ? '' : 's'} already received` : '', renamed.length ? `renamed ${renamed.length} field${renamed.length === 1 ? '' : 's'} for all contacts` : '']
+        .filter(Boolean)
+        .join(', and ');
+      toast.success(parts ? `Saved: ${parts}.` : 'Saved');
+      onSaved();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="stack">
       {info && info.missingName > 0 && !nameChosen && (
         <Callout tone="warn">
-          {info.missingName === info.leads ? 'Leads from here have no name.' : `${info.missingName} of ${info.leads} leads from here have no name.`} Your form sends coded
-          column names (like “text-870”), so look at the examples below, set the column that holds the name to <strong>Full name</strong>, and save. Leads already received
-          are fixed too.
+          {info.missingName === info.leads ? 'Leads from here have no name.' : `${info.missingName} of ${info.leads} leads from here have no name.`} If your form sends coded
+          column names (like “text-870”), look at the examples, set the column that holds the name to <strong>Full name</strong>, and save. Leads already received are fixed
+          too.
         </Callout>
       )}
       <p className="secondary small">
-        Each column we receive and what it is saved as. Most are recognised by their names; change any that are wrong. Custom fields show in Contacts, can be filtered
-        on, and can go into messages, e.g. <code>{'{{city}}'}</code>.
+        Each column your {KIND_LABEL[source.kind].toLowerCase()} sends, an example from your latest lead, and where it is saved. Change any that are wrong, and give custom
+        fields a clear name. Custom fields show in Contacts, can be filtered on, and can go into messages.
       </p>
       <div className="table-wrap">
-        <table className="table">
+        <table className="table columns-table">
           <thead>
             <tr>
               <th>Column</th>
+              <th>Example</th>
               <th>Saved as</th>
             </tr>
           </thead>
           <tbody>
-            {source.fieldsSeen.map(f => (
-              <tr key={f.key}>
-                <td>
-                  {columnLabel(f.key)}
-                  {info?.samples[f.key] && <div className="small secondary">e.g. “{info.samples[f.key]}”</div>}
-                  {f.as === 'custom' && !map[f.key] && <div className="small muted">Custom field <code>{`{{${f.key}}}`}</code></div>}
-                </td>
-                <td style={{ minWidth: 220 }}>
-                  <select
-                    className="select sm"
-                    value={map[f.key] ?? 'auto'}
-                    aria-label={`What "${columnLabel(f.key)}" is`}
-                    onChange={e => {
-                      const next = { ...map };
-                      if (e.target.value === 'auto') delete next[f.key];
-                      else next[f.key] = e.target.value as FieldTarget;
-                      setMap(next);
-                    }}
-                  >
-                    <option value="auto">{source.fieldMap[f.key] ? 'Automatic' : `Automatic (${TARGET_LABEL[f.as]})`}</option>
-                    {(Object.keys(TARGET_LABEL) as FieldTarget[]).map(t => (
-                      <option key={t} value={t}>
-                        {TARGET_LABEL[t]}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-              </tr>
-            ))}
+            {source.fieldsSeen.map(f => {
+              const target = targetOf(f);
+              const sample = info?.samples[f.key];
+              return (
+                <tr key={f.key}>
+                  <td className="nowrap">{columnLabel(f.key)}</td>
+                  <td className="column-example">
+                    {sample ? (
+                      <span title={sample}>{sample}</span>
+                    ) : target === 'country_code' ? (
+                      <span className="muted">Added in front of the phone number</span>
+                    ) : target === 'ignore' ? (
+                      <span className="muted">Not saved</span>
+                    ) : (
+                      <span className="muted">–</span>
+                    )}
+                  </td>
+                  <td style={{ minWidth: 230 }}>
+                    <div className="stack tight">
+                      <select
+                        className="select sm"
+                        value={map[f.key] ?? 'auto'}
+                        aria-label={`What "${columnLabel(f.key)}" is`}
+                        onChange={e => {
+                          const next = { ...map };
+                          if (e.target.value === 'auto') delete next[f.key];
+                          else next[f.key] = e.target.value as FieldTarget;
+                          setMap(next);
+                        }}
+                      >
+                        <option value="auto">{source.fieldMap[f.key] ? 'Automatic' : `Automatic: ${TARGET_LABEL[f.as]}`}</option>
+                        {(Object.keys(TARGET_LABEL) as FieldTarget[]).map(t => (
+                          <option key={t} value={t}>
+                            {TARGET_LABEL[t]}
+                          </option>
+                        ))}
+                      </select>
+                      {target === 'custom' && (
+                        <label className="field-name">
+                          <span className="small muted">Field name</span>
+                          <input
+                            className="input sm"
+                            value={names[f.key] ?? ''}
+                            maxLength={64}
+                            onChange={e => setNames({ ...names, [f.key]: e.target.value })}
+                            aria-label={`Name of the custom field for "${columnLabel(f.key)}"`}
+                          />
+                          <code className="small muted">{`{{${toKey(names[f.key] ?? '') || savedName(f.key)}}}`}</code>
+                        </label>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
       <div className="row wrap">
-        <Button
-          variant="primary"
-          loading={busy}
-          disabled={!dirty}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              const r = await put<{ fixed: number }>(`/api/lead-sources/${source.id}/fields`, { fieldMap: map });
-              toast.success(r.fixed ? `Saved. Fixed the name or email of ${r.fixed} lead${r.fixed === 1 ? '' : 's'} already received.` : 'Saved');
-              onSaved();
-            } catch (err) {
-              toast.error(errorMessage(err));
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
+        <Button variant="primary" loading={busy} disabled={!dirty} onClick={() => void save()}>
           Save columns
         </Button>
         {dirty && (
-          <Button variant="ghost" onClick={() => setMap(source.fieldMap)}>
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setMap(source.fieldMap);
+              setNames(Object.fromEntries(source.fieldsSeen.map(f => [f.key, columnLabel(savedName(f.key))])));
+            }}
+          >
             Undo changes
           </Button>
         )}
       </div>
       <p className="hint">
-        Saving also fixes leads already received: a name or email that was kept as a custom field moves to the right place. To send sheet rows again, clear their
-        WA Status cells. A number that is already saved is never added twice; only its missing name, email or fields are filled in.
+        Saving fixes leads already received too: a name or email kept as a custom field moves to the right place, and a renamed field is renamed for all contacts. To send
+        sheet rows again, clear their WA Status cells. A number already saved is never added twice; only its missing details are filled in.
       </p>
     </div>
   );
@@ -468,7 +521,14 @@ function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: numb
             ]}
           />
           {view === 'setup' && source.url && <SetupSteps source={source} />}
-          {view === 'columns' && <ColumnsEditor key={JSON.stringify(source.fieldMap)} source={source} info={data.columns} onSaved={() => void reload()} />}
+          {view === 'columns' && (
+            <ColumnsEditor
+              key={JSON.stringify([source.fieldMap, data.columns.savedAs, source.fieldsSeen.length])}
+              source={source}
+              info={data.columns}
+              onSaved={() => void reload()}
+            />
+          )}
           {view === 'leads' &&
             (data.events.length === 0 ? (
               <p className="secondary">No leads yet.</p>
@@ -489,7 +549,9 @@ function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: numb
                         </>
                       )}
                     </span>
-                    <span className="small muted">{relativeTime(e.createdAt)}</span>
+                    <span className="small muted nowrap" title={relativeTime(e.createdAt)}>
+                      {formatDateTime(e.createdAt)}
+                    </span>
                   </div>
                 ))}
               </div>

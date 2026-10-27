@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { put, useApi, errorMessage, LEAD_STAGES, type Contact, type ContactFilter, type LeadReport, type LeadStage, type Paged } from '../api';
 import { Button, Card, Empty, ErrorNote, Loading, PageHeader, Pagination, Segmented, TagChip, useToast } from '../components/ui';
 import { Funnel } from '../components/charts';
+import { AddedAt } from './ContactColumns';
 import { IconDownload, IconSearch } from '../components/icons';
 import { displayName, formatDateTime, formatNumber, formatPhone, percent, relativeTime } from '../format';
 
@@ -55,7 +56,7 @@ export function StagePill({ stage }: { stage: LeadStage }) {
   );
 }
 
-function StageSelect({ contact, onSaved }: { contact: Contact; onSaved: (c: Contact) => void }) {
+export function StageSelect({ contact, onSaved }: { contact: Contact; onSaved: (c: Contact) => void }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   return (
@@ -84,7 +85,7 @@ function StageSelect({ contact, onSaved }: { contact: Contact; onSaved: (c: Cont
   );
 }
 
-function RemarkCell({ contact, onSaved }: { contact: Contact; onSaved: (c: Contact) => void }) {
+export function RemarkCell({ contact, onSaved }: { contact: Contact; onSaved: (c: Contact) => void }) {
   const toast = useToast();
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState(contact.leadRemark ?? '');
@@ -384,7 +385,7 @@ export function LeadsPage() {
                       <th>Channel</th>
                       <th>Lead stage</th>
                       <th>Lead remark</th>
-                      <th>Added</th>
+                      <th>Added to WA Reach</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -410,8 +411,8 @@ export function LeadsPage() {
                         <td className="remark-col">
                           <RemarkCell contact={c} onSaved={onSaved} />
                         </td>
-                        <td className="secondary small nowrap" title={formatDateTime(c.createdAt)}>
-                          {relativeTime(c.createdAt)}
+                        <td className="secondary small nowrap">
+                          <AddedAt iso={c.createdAt} />
                         </td>
                       </tr>
                     ))}

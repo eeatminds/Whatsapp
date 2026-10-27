@@ -923,11 +923,45 @@ export class ContactsService {
 
   // ---------------------------------------------------------------- custom fields (business-wide)
 
-  /** Custom fields in use and how many contacts have each. */
-  fields(): Array<{ key: string; count: number }> {
-    return this.core.db.all<{ key: string; count: number }>(
+  /** Custom fields in use, how many contacts have each, and an example value from a recent contact. */
+  fields(): Array<{ key: string; count: number; sample: string | null }> {
+    const fields = this.core.db.all<{ key: string; count: number }>(
       "SELECT j.key AS key, COUNT(*) AS count FROM contacts c, json_each(c.attributes) j WHERE j.value IS NOT NULL AND j.value != '' GROUP BY j.key ORDER BY j.key LIMIT 500",
     );
+    const samples = new Map<string, string>();
+    for (const row of this.core.db.all<{ attributes: string }>("SELECT attributes FROM contacts WHERE attributes != '{}' ORDER BY id DESC LIMIT 300")) {
+      for (const [key, value] of Object.entries(parseJson<Record<string, string>>(row.attributes, {}))) {
+        if (!samples.has(key) && String(value).trim()) samples.set(key, String(value).slice(0, 60));
+      }
+    }
+    return fields.map(f => ({ ...f, sample: samples.get(f.key) ?? null }));
+  }
+
+  /**
+   * Custom-field values that are JavaScript dates as Google Sheets sends them
+   * ("Tue Oct 27 2026 00:00:00 GMT+0530 (India Standard Time)") become "27 Oct 2026".
+   */
+  tidyDateValues(tidy: (value: string) => string): number {
+    let fixed = 0;
+    const rows = this.core.db.all<{ id: number; attributes: string }>(
+      "SELECT id, attributes FROM contacts WHERE attributes LIKE '%GMT+%' OR attributes LIKE '%GMT-%'",
+    );
+    for (const row of rows) {
+      const attrs = parseJson<Record<string, string>>(row.attributes, {});
+      let changed = false;
+      for (const [key, value] of Object.entries(attrs)) {
+        const next = typeof value === 'string' ? tidy(value) : value;
+        if (next !== value) {
+          attrs[key] = next;
+          changed = true;
+        }
+      }
+      if (changed) {
+        this.core.db.run('UPDATE contacts SET attributes = ? WHERE id = ?', JSON.stringify(attrs), row.id);
+        fixed++;
+      }
+    }
+    return fixed;
   }
 
   /** What happens to a field in new leads and imports: renamed, put into name/email, or not saved. */

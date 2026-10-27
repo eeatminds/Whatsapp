@@ -37,9 +37,31 @@ import { IconDownload, IconPlus, IconSearch, IconUpload } from '../components/ic
 import { TagPicker, useTags } from '../components/pickers';
 import { Bubble } from '../components/composer';
 import { displayName, formatDateTime, formatNumber, formatPhone, relativeTime } from '../format';
+import { RemarkCell, StageSelect } from './Leads';
 import { ColumnPicker, ManageFieldsModal, columnCell, columnClass, columnLabel, fieldLabel, useContactColumns } from './ContactColumns';
 
 const AUDIENCE_HANDOFF = 'wa-reach:audience';
+/** Local calendar dates for the "Added" filter. */
+function addedRange(preset: string): { from?: string; to?: string } {
+  const day = (offset: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() - offset);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  switch (preset) {
+    case 'today':
+      return { from: day(0), to: day(0) };
+    case 'yesterday':
+      return { from: day(1), to: day(1) };
+    case '7':
+      return { from: day(6), to: day(0) };
+    case '30':
+      return { from: day(29), to: day(0) };
+    default:
+      return {};
+  }
+}
+
 function toQuery(filter: ContactFilter, extra: Record<string, string | number> = {}): string {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries({ ...filter, ...extra })) if (v !== undefined && v !== '' && !Array.isArray(v)) params.set(k, String(v));
@@ -367,6 +389,8 @@ function ContactDrawer({ contactId, onClose, onChanged }: { contactId: number | 
   const [form, setForm] = useState({ phone: '', name: '', email: '', consent: 'unknown' as Consent, tagIds: [] as number[], attributes: [] as Array<[string, string]> });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Stage and remark save on their own, without touching unsaved edits in the form.
+  const [leadState, setLeadState] = useState<Contact | null>(null);
   const navigate = useNavigate();
   const toast = useToast();
   const { confirm, dialog } = useConfirm();
@@ -435,12 +459,41 @@ function ContactDrawer({ contactId, onClose, onChanged }: { contactId: number | 
             <div className="row wrap">
               <ConsentBadge consent={contact.consent} />
               <WaBadge status={contact.waStatus} pending={contact.waCheckPending} />
-              {contact.source && <Badge>Source: {contact.source}</Badge>}
+              <Badge>From: {contact.channel}</Badge>
               <span className="spacer" />
               <Button size="sm" onClick={() => navigate(`/inbox/${contact.id}`)}>
                 Open chat
               </Button>
             </div>
+          )}
+          {contact && (
+            <>
+              <p className="small muted" style={{ margin: 0 }}>
+                Added to WA Reach on {formatDateTime(contact.createdAt)} ({relativeTime(contact.createdAt)})
+              </p>
+              <div className="drawer-lead">
+                <div className="stack tight">
+                  <span className="label">Lead stage</span>
+                  <StageSelect
+                    contact={leadState ?? contact}
+                    onSaved={c => {
+                      setLeadState(c);
+                      onChanged();
+                    }}
+                  />
+                </div>
+                <div className="stack tight grow">
+                  <span className="label">Lead remark</span>
+                  <RemarkCell
+                    contact={leadState ?? contact}
+                    onSaved={c => {
+                      setLeadState(c);
+                      onChanged();
+                    }}
+                  />
+                </div>
+              </div>
+            </>
           )}
           <div className="grid cols-2">
             <Field label="Phone">
@@ -632,6 +685,7 @@ export function ContactsPage() {
   const { columns, setColumns, renameField } = useContactColumns(fieldKeys);
   const [managingFields, setManagingFields] = useState(false);
   const [fieldText, setFieldText] = useState('');
+  const [added, setAdded] = useState('');
 
   useEffect(() => {
     const timer = setTimeout(() => setSearch(q), 250);
@@ -726,6 +780,23 @@ export function ContactsPage() {
                 </option>
               ))}
             </select>
+            <select
+              className="select sm"
+              style={{ width: 'auto' }}
+              value={added}
+              onChange={e => {
+                setAdded(e.target.value);
+                const { from, to } = addedRange(e.target.value);
+                setFilter({ ...filter, from, to });
+              }}
+              aria-label="Filter by when the contact was added"
+            >
+              <option value="">Added: any time</option>
+              <option value="today">Added today</option>
+              <option value="yesterday">Added yesterday</option>
+              <option value="7">Added in the last 7 days</option>
+              <option value="30">Added in the last 30 days</option>
+            </select>
             {fieldKeys.length > 0 && (
               <select
                 className="select sm"
@@ -763,6 +834,7 @@ export function ContactsPage() {
                   setFilter({});
                   setQ('');
                   setFieldText('');
+                  setAdded('');
                 }}
               >
                 Clear

@@ -22,9 +22,17 @@ describe('custom fields', () => {
 
     // The Columns screen shows an example value per column and that names are missing.
     const detail = (await env.api('GET', `/api/lead-sources/${source.id}`)).body;
-    expect(detail.columns).toMatchObject({ leads: 1, missingName: 1, samples: { text_870: 'Shreyas', text_858: '560043', tel_321: '+919273193792' } });
+    expect(detail.columns).toMatchObject({ leads: 1, missingName: 1, samples: { text_870: 'Shreyas', text_858: '560043', tel_321: '9273193792' } });
+
+    // Choosing "Full name" for the column keeps its example visible (it now lives in the name).
+    await env.api('PUT', `/api/lead-sources/${source.id}/fields`, { fieldMap: { text_870: 'name' } });
+    const after = (await env.api('GET', `/api/lead-sources/${source.id}`)).body;
+    expect(after.columns.samples).toMatchObject({ text_870: 'Shreyas', date: '27 Oct 2026' });
+    expect(contact('919273193792').name).toBe('Shreyas');
+    await env.api('PUT', `/api/lead-sources/${source.id}/fields`, { fieldMap: {} });
 
     // "Move into Name" fixes every contact and every future lead.
+    await env.core.db.run("UPDATE contacts SET name = NULL, attributes = json_set(attributes, '$.text_870', 'Shreyas') WHERE phone = '919273193792'");
     const moved = await env.api('POST', '/api/contacts/fields/move', { from: 'text_870', to: 'name' });
     expect(moved.body).toEqual({ moved: 1, left: 0 });
     expect(contact('919273193792').name).toBe('Shreyas');
@@ -57,8 +65,19 @@ describe('custom fields', () => {
 
     expect((await env.api('POST', '/api/contacts/fields/rename', { from: 'pincode', to: 'Name' })).status).toBe(400);
     const fields = (await env.api('GET', '/api/contacts/fields')).body;
-    expect(fields.fields).toEqual([{ key: 'pincode', count: 4 }]);
+    expect(fields.fields).toEqual([{ key: 'pincode', count: 4, sample: '110001' }]);
     expect(fields.rules).toEqual({ text_858: { target: 'rename', renameTo: 'pincode' } });
+  });
+
+  it('tidies sheet dates already saved, and shows an example for every field', async () => {
+    await env.api('POST', '/api/contacts', { phone: '9845011122', name: 'A', attributes: { date: 'Tue Oct 27 2026 14:05:00 GMT+0530 (India Standard Time)', city: 'Pune' } });
+    expect(env.s.contacts.tidyDateValues((await import('../server/services/leads.js')).tidyValue)).toBe(1);
+    expect(JSON.parse(contact('919845011122').attributes)).toEqual({ date: '27 Oct 2026 14:05', city: 'Pune' });
+    const fields = (await env.api('GET', '/api/contacts/fields')).body.fields;
+    expect(fields).toEqual([
+      { key: 'city', count: 1, sample: 'Pune' },
+      { key: 'date', count: 1, sample: '27 Oct 2026 14:05' },
+    ]);
   });
 
   it('deletes a field and stops saving it, until the rule is removed', async () => {

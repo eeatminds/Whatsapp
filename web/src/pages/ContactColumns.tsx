@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, post, useApi, errorMessage, type Contact } from '../api';
 import { Button, ConsentBadge, ErrorNote, Loading, Modal, TagChip, WaBadge, useConfirm, useToast } from '../components/ui';
-import { formatNumber, relativeTime } from '../format';
+import { formatDateTime, formatNumber, relativeTime } from '../format';
 import { StagePill } from './Leads';
 
 /** "course_interested" → "Course interested". */
@@ -22,7 +22,7 @@ const STANDARD: Array<{ id: string; label: string }> = [
   { id: 'consent', label: 'Consent' },
   { id: 'whatsapp', label: 'WhatsApp' },
   { id: 'last_in', label: 'Last message in' },
-  { id: 'added', label: 'Added' },
+  { id: 'added', label: 'Added to WA Reach' },
 ];
 const DEFAULT_COLUMNS = ['stage', 'tags', 'consent', 'whatsapp', 'last_in', 'added'];
 const STORAGE_KEY = 'wa-reach:contact-columns:v2';
@@ -65,6 +65,16 @@ export function useContactColumns(fieldKeys: string[]) {
   return { columns: visible, setColumns: save, renameField: (from: string, to: string) => save(columns.map(id => (id === `field:${from}` ? `field:${to}` : id))) };
 }
 
+/** When a contact or lead was added: the date and time, with "2h ago" underneath. */
+export function AddedAt({ iso }: { iso: string }) {
+  return (
+    <span className="added-at">
+      {formatDateTime(iso)}
+      <span className="muted">{relativeTime(iso)}</span>
+    </span>
+  );
+}
+
 export function columnCell(id: string, c: Contact): ReactNode {
   switch (id) {
     case 'email':
@@ -91,7 +101,7 @@ export function columnCell(id: string, c: Contact): ReactNode {
     case 'last_in':
       return c.lastInboundAt ? relativeTime(c.lastInboundAt) : '–';
     case 'added':
-      return relativeTime(c.createdAt);
+      return <AddedAt iso={c.createdAt} />;
     default: {
       const value = id.startsWith('field:') ? c.attributes[id.slice(6)] : undefined;
       return value ? <span title={value}>{value}</span> : <span className="muted">–</span>;
@@ -202,7 +212,9 @@ function ruleText(key: string, rule: FieldRule): string {
 }
 
 export function ManageFieldsModal({ onClose, onChanged, onRenamed }: { onClose: () => void; onChanged: () => void; onRenamed: (from: string, to: string) => void }) {
-  const { data, error, loading, reload } = useApi<{ fields: Array<{ key: string; count: number }>; rules: Record<string, FieldRule> }>('/api/contacts/fields');
+  const { data, error, loading, reload } = useApi<{ fields: Array<{ key: string; count: number; sample: string | null }>; rules: Record<string, FieldRule> }>(
+    '/api/contacts/fields',
+  );
   const [editing, setEditing] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
@@ -261,6 +273,7 @@ export function ManageFieldsModal({ onClose, onChanged, onRenamed }: { onClose: 
                 <thead>
                   <tr>
                     <th>Field</th>
+                    <th>Example</th>
                     <th className="num">Contacts</th>
                     <th>Change</th>
                   </tr>
@@ -272,6 +285,7 @@ export function ManageFieldsModal({ onClose, onChanged, onRenamed }: { onClose: 
                         <div style={{ fontWeight: 550 }}>{fieldLabel(f.key)}</div>
                         <code className="small">{`{{${f.key}}}`}</code>
                       </td>
+                      <td className="column-example">{f.sample ? <span title={f.sample}>{f.sample}</span> : <span className="muted">–</span>}</td>
                       <td className="num">{formatNumber(f.count)}</td>
                       <td>
                         {editing === f.key ? (
