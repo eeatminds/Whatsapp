@@ -203,7 +203,16 @@ To update later: `git pull`, then run the same `docker compose … up -d --build
 
 `deploy/backup.sh` takes a consistent snapshot of every business's database and media while the app keeps running. It then packs the snapshot with a copy of `.env`, optionally encrypts it, and uploads it to Google Drive with [rclone](https://rclone.org). Old uploads are deleted after 14 days, and the server keeps the last 3. The admin overview shows the last backup, and a failed or missed backup triggers a health alert.
 
-One-time setup on the server:
+**Keep backups only on this server** (no Google Drive, no rclone): copies go to `wa-reach/backups/`, and the newest 7 are kept.
+
+```bash
+cd ~/Shreyas/wa-reach && echo 'BACKUP_REMOTE=local' >> .env && bash deploy/backup.sh
+(crontab -l 2>/dev/null; echo "30 20 * * * cd $PWD && bash deploy/backup.sh >> backup.log 2>&1") | crontab -
+```
+
+(20:30 server time is 02:00 in India when the server clock is UTC.) These copies sit on the same disk, so also keep your host's own server backups switched on. At Hostinger, weekly backups are on by default (VPS → Manage → Snapshots & Backups), and they include this folder.
+
+**Or upload to Google Drive.** One-time setup on the server:
 
 1. **Install rclone.** `curl https://rclone.org/install.sh | sudo bash`
 2. **Connect Google Drive.** Run `rclone config` and answer:

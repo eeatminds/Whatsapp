@@ -119,7 +119,7 @@ export class HealthMonitor {
 
     const backup = this.backupStatus();
     if (!backup) {
-      issues.push({ key: 'backup:none', severity: 'warning', title: 'Backups are not set up', detail: 'Set up daily Google Drive backups (README, Daily backups).', business: null, notify: false });
+      issues.push({ key: 'backup:none', severity: 'warning', title: 'Backups are not set up', detail: 'Turn on nightly backups (README, Daily backups).', business: null, notify: false });
     } else if (!backup.lastOkAt || now - new Date(backup.lastOkAt).getTime() > BACKUP_STALE_MS || (backup.lastError && backup.lastRunAt && backup.lastRunAt > backup.lastOkAt)) {
       issues.push({
         key: 'backup:stale',
