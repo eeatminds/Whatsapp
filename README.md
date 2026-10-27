@@ -156,6 +156,15 @@ If Docker Hub rate-limits you, use `OPENWA_IMAGE=ghcr.io/rmyndharis/openwa:0.23`
 
 You need a Linux VPS (Ubuntu 22.04+ works well) and a domain or subdomain, e.g. `app.yourbrand.com`.
 
+**Quickest way** (fresh Ubuntu server, logged in as root): point the domain's DNS A record at the server, then run
+
+```bash
+git clone --depth 1 -b claude/sweet-fermat-9qszg4 https://github.com/digitalmarketing-RNS/Shreyas ~/Shreyas
+cd ~/Shreyas/wa-reach && bash deploy/install.sh
+```
+
+`install.sh` asks for the domain and your admin email. It installs Docker, writes `.env` with random secrets and a memory limit sized to the server, opens the firewall for HTTPS, starts everything and prints your admin password. The steps below do the same by hand.
+
 1. **Size the server.** On the `whatsapp-web.js` engine each connected number runs a headless browser that uses about 300–500 MB of RAM. Plan for 2 GB of RAM for up to about 3 numbers, 4 GB for about 8, and 8 GB for about 15–20. Set `OPENWA_MEM_LIMIT` to match.
 2. **Point DNS.** Create an `A` record for `app.yourbrand.com` pointing to the server's IP address.
 3. **Install Docker.** `curl -fsSL https://get.docker.com | sh`
