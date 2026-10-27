@@ -236,6 +236,25 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 Use the `env.txt` inside the backup as your `.env` on a new server. The app secret that unlocks saved Meta access tokens is restored with the data folder, or comes from `APP_SECRET` in `.env` if you set one. Skip the `openssl` line for backups without a passphrase.
 
+### Moving to a new server
+
+`deploy/migrate.sh` moves everything: every business's data, `.env`, the WhatsApp logins (so QR-linked numbers usually don't need scanning again), the HTTPS certificate, the Google Drive backup login and the cron jobs. Do it at a quiet time; WA Reach is offline for the 10–30 minutes the move takes.
+
+1. **New server:** Ubuntu 22.04 or 24.04 with nothing else on ports 80/443 (no control panel). Install Docker: `curl -fsSL https://get.docker.com | sh`
+2. **Old server:**
+
+   ```bash
+   cd ~/Shreyas/wa-reach && bash deploy/update.sh   # gets the move script
+   bash deploy/migrate.sh export
+   scp ~/wa-reach-move.tar.gz root@NEW_SERVER_IP:~/
+   ```
+
+   `export` stops WA Reach on the old server and switches off its cron jobs, so nothing is sent twice. It then prints the exact commands for the new server.
+3. **New server:** run the two commands `export` printed (a `git clone` and `bash deploy/migrate.sh import`).
+4. **DNS:** point the domain's A record at the new server's IP. Meta webhooks, lead links and tracked links keep working because they use the domain, not the IP.
+
+To go back, run `bash deploy/migrate.sh restart` on the old server and point DNS back. Once everything works, delete `wa-reach-move.tar.gz` on both servers; it holds passwords and customer data.
+
 ### Run without Docker
 
 Start OpenWA however you like, then:
