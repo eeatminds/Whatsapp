@@ -128,6 +128,8 @@ export interface Contact {
   leadRemarkAt: string | null;
   channel: string;
   channelKey: string;
+  /** False for people who only messaged in (Inbox only, not in Contacts). */
+  saved: boolean;
   createdAt: string;
   updatedAt: string;
   tags: Tag[];
@@ -409,6 +411,8 @@ export interface Conversation {
   lastAt: string;
   unread: number;
   sessionId: string;
+  /** False: someone who messaged in and is not in Contacts yet. */
+  saved: boolean;
 }
 
 export interface Settings {

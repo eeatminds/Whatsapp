@@ -242,12 +242,13 @@ export class AutoRepliesService {
   }
 
   /** The first active rule (by priority) that matches and is not cooling down for this contact. */
-  findMatch(body: string, sessionId: string, contactId: number): AutoReply | null {
+  findMatch(body: string, sessionId: string, contactId: number, options: { catchAll?: boolean } = {}): AutoReply | null {
     const rules = this.core.db
       .all<AutoReplyRow>('SELECT * FROM auto_replies WHERE active = 1 AND (session_id IS NULL OR session_id = ?) ORDER BY priority, id', sessionId)
       .map(toAutoReply);
     const now = this.core.clock().getTime();
     for (const rule of rules) {
+      if (rule.matchType === 'any' && options.catchAll === false) continue;
       if (!matchesRule(rule, body)) continue;
       if (rule.cooldownMinutes > 0) {
         const since = nowIso(new Date(now - rule.cooldownMinutes * 60_000));
@@ -270,6 +271,9 @@ export class AutoRepliesService {
     this.core.db.tx(() => {
       this.core.db.run('INSERT INTO auto_reply_hits (rule_id, contact_id, hit_at) VALUES (?, ?, ?)', rule.id, contact.id, at);
       this.core.db.run('UPDATE auto_replies SET hit_count = hit_count + 1, last_hit_at = ? WHERE id = ?', at, rule.id);
+      // A rule that tags someone, records consent or starts a series makes them a contact.
+      const acts = rule.actions;
+      if (!contact.saved && (acts.addTagIds.length || acts.setConsent || acts.enrollSequenceId)) this.contacts.addToContacts(contact.id, 'auto-reply');
       if (rule.actions.addTagIds.length) this.contacts.addTags([contact.id], rule.actions.addTagIds);
       if (rule.actions.removeTagIds.length) this.contacts.removeTags([contact.id], rule.actions.removeTagIds);
       // The contact is texting us, so a keyword opt-in is their own consent.

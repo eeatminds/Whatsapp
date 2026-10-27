@@ -91,15 +91,15 @@ export function SettingsPage() {
         </div>
       </Card>
 
-      <Card title="New people who message you" subtitle="Your WhatsApp number may also get personal chats. Choose whether those people are added to your contacts.">
+      <Card title="New people who message you" subtitle="Everyone who messages your number shows in the Inbox. Choose whether they are also added to your contacts.">
         <Toggle
           checked={form.saveUnknownSenders}
           onChange={saveUnknownSenders => setForm({ ...form, saveUnknownSenders })}
           label="Add new people who message you as contacts"
           description={
             form.saveUnknownSenders
-              ? 'On: anyone who messages your number is added to Contacts and the Inbox, and can trigger auto-replies (e.g. the “hi” greeting menu). Best for a dedicated business number.'
-              : 'Off (recommended for a personal or shared number): only contacts you add or import appear in the Inbox. Messages from anyone else are ignored and never stored.'
+              ? 'On: anyone who messages your number is added to Contacts straight away and gets all auto-replies, including catch-all ones. Best for a dedicated business number.'
+              : 'Off (recommended for a personal or shared number): new people show in the Inbox marked “New”, with an “Add to contacts” button. They join Contacts when you add them, fill in your lead form, opt in (e.g. “JOIN”), or send a keyword whose auto-reply tags them. Catch-all auto-replies only answer saved contacts.'
           }
         />
       </Card>

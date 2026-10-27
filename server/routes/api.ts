@@ -213,6 +213,8 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   });
 
   app.patch('/contacts/:id', async request => s.contacts.update(params(idParam, request).id, request.body));
+  /** Add someone who messaged in (Inbox only) to Contacts. */
+  app.post('/contacts/:id/save', async request => s.contacts.addToContacts(params(idParam, request).id));
 
   /** Lead stage and the shared call remark; the remark is signed with who wrote it. */
   app.put('/contacts/:id/lead', async request => {

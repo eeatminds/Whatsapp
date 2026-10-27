@@ -258,8 +258,9 @@ export class SegmentsService {
     if (!changes) throw notFound('Segment');
   }
 
+  /** Segments only ever match saved contacts, never people who just messaged in. */
   where(rules: Rules): SqlFragment {
-    return compileRules(rules, this.core.clock());
+    return andFragments([{ sql: 'c.saved = 1', params: [] }, compileRules(rules, this.core.clock())]);
   }
 
   count(rules: Rules): number {

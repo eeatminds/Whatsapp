@@ -22,6 +22,8 @@ const CHANNEL_NAMES: Record<string, string> = {
   import: 'CSV import',
   manual: 'Added manually',
   inbound: 'Messaged on WhatsApp',
+  'auto-reply': 'WhatsApp keyword',
+  'opt-in': 'Opted in on WhatsApp',
   'lead-form': 'Lead form',
   api: 'API',
 };
@@ -51,6 +53,8 @@ export interface ContactRow {
   lead_remark_by: string | null;
   lead_remark_at: string | null;
   lead_source_id: number | null;
+  /** 0: someone who messaged in and is only in the Inbox, not (yet) a contact. */
+  saved: number;
   created_at: string;
   updated_at: string;
 }
@@ -79,6 +83,8 @@ export interface Contact {
   /** Where the lead came from: a lead source's name, or e.g. "CSV import". */
   channel: string;
   channelKey: string;
+  /** False for people who only messaged in: shown in the Inbox, not in Contacts. */
+  saved: boolean;
   createdAt: string;
   updatedAt: string;
   tags: Tag[];
@@ -108,6 +114,7 @@ export function toContact(row: ContactRow, tags: Tag[] = [], sourceNames: Map<nu
     leadRemarkAt: row.lead_remark_at ?? null,
     channel: row.lead_source_id ? (sourceNames.get(row.lead_source_id) ?? 'Lead form') : channelName(row.source),
     channelKey: row.lead_source_id ? `src:${row.lead_source_id}` : (row.source ?? 'other'),
+    saved: row.saved !== 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     tags,
@@ -311,7 +318,8 @@ export class ContactsService {
   // ---------------------------------------------------------------- queries
 
   filterSql(filter: ContactFilter): SqlFragment {
-    const parts: SqlFragment[] = [];
+    // People who only messaged in (not saved as contacts) never appear in lists, exports or bulk actions.
+    const parts: SqlFragment[] = [{ sql: 'c.saved = 1', params: [] }];
     if (filter.segmentId) parts.push(this.segments.where(this.segments.get(filter.segmentId).rules));
     if (filter.q) {
       const q = filter.q.trim();
@@ -431,6 +439,11 @@ export class ContactsService {
       let contactId: number;
       let created = false;
       const incoming = this.applyFieldRenames(cleanAttributes(data.attributes));
+      if (existing && !existing.saved) {
+        // Someone who messaged in is now being added as a contact.
+        this.promote(existing.id, data.source ?? 'manual');
+        created = true;
+      }
       if (existing) {
         const attrs = { ...parseJson<Record<string, string>>(existing.attributes, {}), ...incoming };
         this.core.db.run(
@@ -663,6 +676,21 @@ export class ContactsService {
     return filled;
   }
 
+  /** Turn an Inbox-only person into a contact; "added" is now. Returns false if already a contact. */
+  private promote(contactId: number, source: string): boolean {
+    const now = this.now();
+    return (
+      this.core.db.run('UPDATE contacts SET saved = 1, source = ?, created_at = ?, updated_at = ? WHERE id = ? AND saved = 0', source, now, now, contactId).changes > 0
+    );
+  }
+
+  /** "Add to contacts" from the Inbox (or an auto-reply that tags someone). */
+  addToContacts(contactId: number, source = 'inbound'): Contact {
+    this.row(contactId);
+    this.promote(contactId, source);
+    return this.get(contactId);
+  }
+
   /** Remember which lead source brought a new contact in (first source only). */
   setLeadSource(contactId: number, sourceId: number): void {
     this.core.db.run('UPDATE contacts SET lead_source_id = ? WHERE id = ? AND lead_source_id IS NULL', sourceId, contactId);
@@ -722,7 +750,7 @@ export class ContactsService {
   // ---------------------------------------------------------------- inbound + validation helpers
 
   /** Contact for an inbound WhatsApp sender, creating it on first contact. */
-  touchInbound(phone: string, chatId: string | null, pushName: string | null, at: string): { row: ContactRow; created: boolean } {
+  touchInbound(phone: string, chatId: string | null, pushName: string | null, at: string, save = true): { row: ContactRow; created: boolean } {
     const existing = this.findByPhone(phone);
     if (existing) {
       this.core.db.run(
@@ -737,12 +765,13 @@ export class ContactsService {
       return { row: this.row(existing.id), created: false };
     }
     const id = this.core.db.run(
-      `INSERT INTO contacts (phone, name, wa_status, wa_chat_id, source, last_inbound_at, created_at, updated_at)
-       VALUES (?, ?, 'valid', ?, 'inbound', ?, ?, ?)`,
+      `INSERT INTO contacts (phone, name, wa_status, wa_chat_id, source, last_inbound_at, saved, created_at, updated_at)
+       VALUES (?, ?, 'valid', ?, 'inbound', ?, ?, ?, ?)`,
       phone,
       pushName,
       chatId,
       at,
+      save ? 1 : 0,
       at,
       at,
     ).lastInsertRowid;
@@ -852,7 +881,19 @@ export class ContactsService {
         const existing = this.findByPhone(normalized.phone);
         const now = this.now();
         let contactId: number;
-        if (existing) {
+        if (existing && !existing.saved) {
+          // Someone who only messaged in: this import adds them as a contact.
+          contactId = existing.id;
+          this.promote(contactId, 'import');
+          this.core.db.run(
+            'UPDATE contacts SET name = COALESCE(?, name), email = COALESCE(?, email), attributes = ? WHERE id = ?',
+            name ?? null,
+            record.email ?? null,
+            JSON.stringify({ ...parseJson<Record<string, string>>(existing.attributes, {}), ...cleanAttributes(record.attrs) }),
+            contactId,
+          );
+          result.created++;
+        } else if (existing) {
           contactId = existing.id;
           if (data.updateExisting) {
             const attrs = { ...parseJson<Record<string, string>>(existing.attributes, {}), ...cleanAttributes(record.attrs) };
@@ -1094,7 +1135,7 @@ export class ContactsService {
               SUM(wa_status = 'valid') AS valid,
               SUM(wa_status = 'invalid') AS invalid,
               SUM(created_at >= ?) AS newLast7Days
-         FROM contacts`,
+         FROM contacts WHERE saved = 1`,
       since,
     );
     return {

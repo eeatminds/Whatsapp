@@ -341,7 +341,8 @@ export class CampaignsService {
 
   /** Contacts matched by the audience definition, before consent/validity exclusions. */
   private audienceSql(audience: Audience): SqlFragment {
-    const parts: SqlFragment[] = [];
+    // Campaigns go to saved contacts only, never to people who just messaged in.
+    const parts: SqlFragment[] = [{ sql: 'c.saved = 1', params: [] }];
     switch (audience.type) {
       case 'segment':
         parts.push(this.segments.where(this.segments.get(audience.segmentId).rules));

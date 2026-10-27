@@ -708,7 +708,7 @@ export class Platform {
     const db = runtime.core.db;
     return {
       numbers: this.ownedSessions(runtime).size + runtime.services.official.count(),
-      contacts: db.get<{ n: number }>('SELECT COUNT(*) AS n FROM contacts')?.n ?? 0,
+      contacts: db.get<{ n: number }>('SELECT COUNT(*) AS n FROM contacts WHERE saved = 1')?.n ?? 0,
       sentThisMonth:
         db.get<{ n: number }>(
           `SELECT COUNT(*) AS n FROM messages WHERE direction = 'out' AND source_type IN ${MARKETING_SOURCES} AND created_at >= ?`,

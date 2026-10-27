@@ -574,7 +574,8 @@ export class LeadsService {
       return { ok: false, error };
     }
     const existing = this.contacts.findByPhone(lead.phone);
-    if (existing) {
+    // Someone who only messaged in before is a new lead now (not a duplicate).
+    if (existing?.saved) {
       const since = existing.created_at.slice(0, 10);
       // Never a second contact or a second welcome; only blanks (no name yet, say) are filled in.
       const filled = this.contacts.fillBlanks(existing.id, { name: lead.name, email: lead.email, attributes: lead.attributes });

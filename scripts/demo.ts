@@ -222,6 +222,14 @@ async function main(): Promise<void> {
       s.contacts.setLead(result.contactId, { stage, remark }, team[i % team.length]);
     }
   }
+  // Someone new writes in: Inbox only until the business adds them.
+  offset = -20 * 60_000;
+  await s.inbound.handle({
+    event: 'message.received',
+    sessionId: session.id,
+    data: { id: 'demo_new_person', from: '919900123456@c.us', body: 'Hi, is the Masala Chai starter kit available in Pune?', type: 'text', kind: 'individual', contact: { pushName: 'Kiran' } },
+  });
+
   // The same person filling the form twice is kept once.
   offset = -86_400_000;
   s.leads.receive(sources[0], { name: 'Duplicate entry', phone: '98860 20000' });

@@ -380,4 +380,10 @@ export const MIGRATIONS: string[] = [
     updated_at TEXT NOT NULL
   );
   `,
+  // 10: people who message in but are not (yet) contacts: kept for the Inbox only. They stay out
+  // of Contacts, segments, campaigns and reports until the business adds them.
+  `
+  ALTER TABLE contacts ADD COLUMN saved INTEGER NOT NULL DEFAULT 1;
+  CREATE INDEX contacts_saved ON contacts (saved);
+  `,
 ];

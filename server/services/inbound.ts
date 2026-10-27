@@ -115,6 +115,7 @@ export type InboundOutcome =
   | 'session_status'
   | 'unresolved_sender'
   | 'unknown_sender'
+  | 'inbox_only'
   | 'duplicate_message'
   | 'opted_out'
   | 'opted_in'
@@ -277,11 +278,12 @@ export class InboundService {
     const at = nowIso(sentAt);
     const chatId = phoneFromChatId(message.from) ? message.from! : chatIdFor(phone);
     const pushName = message.contact?.pushName || message.contact?.name || null;
-    // Only the business adds contacts, unless it chose to save everyone who writes in.
-    if (!this.contacts.findByPhone(phone) && !this.settings.get().saveUnknownSenders) return 'unknown_sender';
+    // Everyone who writes in reaches the Inbox. Only the business adds contacts, unless it chose to
+    // save everyone who writes in; until then a new person is kept for the Inbox only.
+    const save = this.settings.get().saveUnknownSenders;
 
     return this.core.db.tx(() => {
-      const { row: contact } = this.contacts.touchInbound(phone, chatId, pushName, at);
+      const { row: contact } = this.contacts.touchInbound(phone, chatId, pushName, at, save);
       const body = typeof message.body === 'string' ? message.body : '';
       const inserted = this.messages.recordInbound({
         contactId: contact.id,
@@ -305,6 +307,8 @@ export class InboundService {
         return 'opted_out' as const;
       }
       if (keyword && settings.compliance.optInKeywords.some(k => normalizeKeywordText(k) === keyword)) {
+        // Asking for your messages ("JOIN", "START") makes someone a contact.
+        if (!contact.saved) this.contacts.addToContacts(contact.id, 'opt-in');
         const changed = this.contacts.setConsent(contact.id, 'opted_in', 'keyword');
         if (changed && settings.compliance.optInReply.trim()) {
           this.outbox.enqueue({ sessionId, contactId: contact.id, chatId, body: settings.compliance.optInReply, sourceType: 'system', delayMs: 1000 });
@@ -315,12 +319,14 @@ export class InboundService {
       this.campaigns.attributeReply(contact.id, at);
       this.bus.emit('contact.replied', { contactId: contact.id, at });
 
-      const rule = this.autoReplies.findMatch(body, sessionId, contact.id);
+      // Keyword rules answer anyone; a catch-all reply only goes to saved contacts, so friends and
+      // family writing to a connected personal number don't get business auto-replies.
+      const rule = this.autoReplies.findMatch(body, sessionId, contact.id, { catchAll: contact.saved !== 0 });
       if (rule) {
         this.autoReplies.apply(rule, this.contacts.row(contact.id), sessionId, chatId);
         return 'auto_reply' as const;
       }
-      return 'received' as const;
+      return contact.saved ? ('received' as const) : ('inbox_only' as const);
     });
   }
 

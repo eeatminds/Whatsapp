@@ -220,6 +220,7 @@ export class MessagesService {
     lastAt: string;
     unread: number;
     sessionId: string;
+    saved: boolean;
   }> {
     const params: Array<string | number> = [];
     let filter = '';
@@ -239,6 +240,7 @@ export class MessagesService {
       created_at: string;
       session_id: string;
       unread: number;
+      saved: number;
     }>(
       `WITH latest AS (
          SELECT contact_id, MAX(id) AS id FROM messages
@@ -246,7 +248,7 @@ export class MessagesService {
             ${options.unreadOnly || options.repliedOnly ? "AND contact_id IN (SELECT DISTINCT contact_id FROM messages WHERE direction = 'in' AND contact_id IS NOT NULL)" : ''}
           GROUP BY contact_id
        )
-       SELECT m.contact_id, c.name, c.phone, c.consent, m.body, m.type, m.direction, m.created_at, m.session_id,
+       SELECT m.contact_id, c.name, c.phone, c.consent, c.saved, m.body, m.type, m.direction, m.created_at, m.session_id,
               (SELECT COUNT(*) FROM messages u WHERE u.contact_id = m.contact_id AND u.direction = 'in' AND u.seen = 0) AS unread
          FROM latest l JOIN messages m ON m.id = l.id JOIN contacts c ON c.id = m.contact_id
         WHERE 1 ${filter}
@@ -267,6 +269,7 @@ export class MessagesService {
         lastAt: r.created_at,
         unread: r.unread,
         sessionId: r.session_id,
+        saved: r.saved !== 0,
       }));
   }
 

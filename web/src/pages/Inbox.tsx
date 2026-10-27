@@ -120,6 +120,30 @@ function Thread({ contactId, onBack }: { contactId: number; onBack: () => void }
           )}
         </div>
       )}
+      {!contact.saved && (
+        <div style={{ padding: '8px 12px 0' }}>
+          <Callout>
+            <div className="row between wrap" style={{ gap: 8 }}>
+              <span>Not in your contacts yet. They messaged your WhatsApp number, so you can reply here. Add them to send campaigns and follow-ups.</span>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={async () => {
+                  try {
+                    await post(`/api/contacts/${contact.id}/save`);
+                    toast.success('Added to contacts');
+                    await reload();
+                  } catch (err) {
+                    toast.error(errorMessage(err));
+                  }
+                }}
+              >
+                Add to contacts
+              </Button>
+            </div>
+          </Callout>
+        </div>
+      )}
       {contact.consent === 'opted_out' && (
         <div style={{ padding: '8px 12px 0' }}>
           <Callout tone="warn">This contact opted out of marketing. Replying to their questions is fine; don't send promotions.</Callout>
@@ -177,7 +201,7 @@ export function InboxPage() {
 
   return (
     <div className="page" style={{ maxWidth: 1280 }}>
-      <PageHeader title="Inbox" description="Every chat with your contacts: messages you send and the replies you get." />
+      <PageHeader title="Inbox" description="Every chat on your WhatsApp numbers. People who aren't in your contacts yet are marked New." />
       <Card bodyClass="">
         <div className={`inbox ${selected ? 'has-thread' : ''}`}>
           <div className="inbox-list">
@@ -212,7 +236,10 @@ export function InboxPage() {
                   <span className="avatar">{initials(c.name, c.phone)}</span>
                   <span style={{ minWidth: 0, flex: 1 }}>
                     <span className="row between">
-                      <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName(c)}</strong>
+                      <span className="row" style={{ gap: 6, minWidth: 0 }}>
+                        <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName(c)}</strong>
+                        {!c.saved && <span className="badge blue">New</span>}
+                      </span>
                       <span className="small muted nowrap">{relativeTime(c.lastAt)}</span>
                     </span>
                     <span className="row between">
