@@ -4,6 +4,7 @@ import { put, useApi, errorMessage, LEAD_STAGES, type Contact, type ContactFilte
 import { Button, Card, Empty, ErrorNote, Loading, PageHeader, Pagination, Segmented, TagChip, useToast } from '../components/ui';
 import { Funnel } from '../components/charts';
 import { AddedAt } from './ContactColumns';
+import { OriginSelect, type Origin } from '../country';
 import { IconDownload, IconSearch } from '../components/icons';
 import { displayName, formatDateTime, formatNumber, formatPhone, percent, relativeTime } from '../format';
 
@@ -265,9 +266,10 @@ export function LeadsPage() {
   const [page, setPage] = useState(1);
   const stage = (params.get('stage') as LeadStage | null) ?? undefined;
   const channel = params.get('channel') ?? undefined;
+  const origin = (params.get('origin') as Origin | null) ?? undefined;
   const range = useMemo(() => rangeFor(preset, custom), [preset, custom]);
 
-  const setFilter = (next: { stage?: LeadStage; channel?: string }) => {
+  const setFilter = (next: { stage?: LeadStage; channel?: string; origin?: Origin }) => {
     const p = new URLSearchParams(params);
     for (const [k, v] of Object.entries(next)) {
       if (v) p.set(k, v);
@@ -287,7 +289,7 @@ export function LeadsPage() {
 
   const reportPath = `/api/leads/report?${query(range)}`;
   const { data: report, error: reportError, loading: reportLoading, reload: reloadReport } = useApi<LeadReport>(reportPath);
-  const filter = { ...range, stage, channel, q: q || undefined } satisfies ContactFilter;
+  const filter = { ...range, stage, channel, origin, q: q || undefined } satisfies ContactFilter;
   const listPath = `/api/contacts?${query({ ...filter, page, pageSize: 25 })}`;
   const { data: list, error: listError, setData } = useApi<Paged<Contact>>(listPath);
 
@@ -356,6 +358,7 @@ export function LeadsPage() {
                 </option>
               ))}
             </select>
+            <OriginSelect value={origin} onChange={value => setFilter({ origin: value })} />
           </div>
           <span className="small muted nowrap">
             {list ? `${formatNumber(list.total)} lead${list.total === 1 ? '' : 's'}` : ''}

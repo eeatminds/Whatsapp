@@ -85,6 +85,33 @@ export interface OpenWAClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+/** A chat in the WhatsApp account (most recent first). */
+export interface OpenWAChat {
+  id: string;
+  name?: string | null;
+  isGroup?: boolean;
+  kind?: string;
+  unreadCount?: number;
+  timestamp?: number;
+}
+
+/** A message read live from WhatsApp's chat history. */
+export interface OpenWAHistoryMessage {
+  id: string;
+  from?: string;
+  to?: string;
+  chatId?: string;
+  body?: string;
+  type?: string;
+  timestamp?: number;
+  fromMe?: boolean;
+  isGroup?: boolean;
+  kind?: string;
+  isStatusBroadcast?: boolean;
+  senderPhone?: string;
+  contact?: { pushName?: string; name?: string };
+}
+
 export class OpenWAClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
@@ -214,6 +241,34 @@ export class OpenWAClient {
     );
   }
 
+  listChats(sessionId: string, limit = 100, offset = 0): Promise<OpenWAChat[]> {
+    return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/chats?limit=${limit}&offset=${offset}`, undefined, 60_000);
+  }
+
+  /** Messages of one chat, read live from WhatsApp (deep: further back, up to 2000). */
+  chatHistory(sessionId: string, chatId: string, limit = 50, deep = false): Promise<OpenWAHistoryMessage[]> {
+    return this.request(
+      'GET',
+      `/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(chatId)}/history?limit=${limit}${deep ? '&deep=true' : ''}`,
+      undefined,
+      deep ? 180_000 : 60_000,
+    );
+  }
+
+  /** A message's photo, voice note or document, as stored by the gateway. */
+  async getMedia(sessionId: string, chatId: string, messageId: string): Promise<{ mimetype: string; data: Buffer }> {
+    const path = `/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(chatId)}/${encodeURIComponent(messageId)}/media`;
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}/api${path}`, { headers: { 'X-API-Key': this.apiKey }, signal: AbortSignal.timeout(60_000) });
+    } catch (error) {
+      throw new OpenWAError(0, `OpenWA unreachable at ${this.baseUrl}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!response.ok) throw new OpenWAError(response.status, `OpenWA ${response.status}: no media for this message`);
+    const mimetype = (response.headers.get('content-type') ?? 'application/octet-stream').split(';')[0].trim().toLowerCase();
+    return { mimetype, data: Buffer.from(await response.arrayBuffer()) };
+  }
+
   sendText(sessionId: string, chatId: string, text: string): Promise<SendResult> {
     return this.request('POST', `/sessions/${encodeURIComponent(sessionId)}/messages/send-text`, { chatId, text }, 60_000);
   }
@@ -251,4 +306,7 @@ export type OpenWAApi = Pick<
   | 'resolvePhone'
   | 'sendText'
   | 'sendMedia'
+  | 'listChats'
+  | 'chatHistory'
+  | 'getMedia'
 >;

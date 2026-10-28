@@ -393,4 +393,22 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE lead_sources ADD COLUMN sheet_config TEXT NOT NULL DEFAULT '{}';
   ALTER TABLE lead_sources ADD COLUMN sheet_synced_at TEXT;
   `,
+  // 12: the Inbox as a full copy of WhatsApp: chat history read from the phone once per number,
+  // what kind of file a message carries, and the country of each number (for Indian/International).
+  `
+  CREATE TABLE history_syncs (
+    session_id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    chats_total INTEGER NOT NULL DEFAULT 0,
+    chats_done INTEGER NOT NULL DEFAULT 0,
+    messages INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    started_at TEXT NOT NULL,
+    finished_at TEXT
+  );
+  ALTER TABLE messages ADD COLUMN media_mime TEXT;
+  ALTER TABLE messages ADD COLUMN media_name TEXT;
+  ALTER TABLE contacts ADD COLUMN country TEXT;
+  CREATE INDEX contacts_country ON contacts (country);
+  `,
 ];

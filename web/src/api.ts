@@ -130,6 +130,8 @@ export interface Contact {
   channelKey: string;
   /** False for people who only messaged in (Inbox only, not in Contacts). */
   saved: boolean;
+  /** The number's country (ISO code), when known. */
+  country: string | null;
   createdAt: string;
   updatedAt: string;
   tags: Tag[];
@@ -171,6 +173,8 @@ export interface ContactFilter {
   fieldValue?: string;
   from?: string;
   to?: string;
+  /** Numbers from the business's own country, or from anywhere else. */
+  origin?: 'local' | 'international';
   ids?: number[];
 }
 
@@ -399,6 +403,19 @@ export interface Message {
   sourceType: string;
   sourceId: number | null;
   createdAt: string;
+  /** A photo, video, voice note or document from WhatsApp. */
+  file: { kind: 'image' | 'video' | 'audio' | 'document'; mimetype: string | null; name: string | null } | null;
+}
+
+export interface HistorySync {
+  sessionId: string;
+  state: 'running' | 'done' | 'failed';
+  chatsTotal: number;
+  chatsDone: number;
+  messages: number;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
 }
 
 export interface Conversation {
@@ -421,6 +438,7 @@ export interface Settings {
   defaultCountry: string;
   defaultSessionId: string | null;
   saveUnknownSenders: boolean;
+  countryTags: boolean;
   quietHours: { enabled: boolean; start: string; end: string };
   sending: { sessionMaxPerMinute: number; dailyCapPerSession: number; frequencyCapHours: number; breakerThreshold: number; defaultPerMinute: number };
   compliance: { optOutKeywords: string[]; optInKeywords: string[]; optOutReply: string; optInReply: string; optOutFooter: string };

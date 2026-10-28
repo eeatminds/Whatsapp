@@ -4,6 +4,7 @@ import { Badge, Button, Callout, Card, ErrorNote, Field, Loading, NumberInput, P
 import { SessionSelect } from '../components/pickers';
 import { useSession } from '../session';
 import { suggestedTimeZones, timeZoneOptions } from '../timezones';
+import { countryName } from '../country';
 
 export function SettingsPage() {
   const { data, error, loading } = useApi<Settings>('/api/settings');
@@ -29,6 +30,7 @@ export function SettingsPage() {
   }, [data]);
 
   if ((loading && !data) || !form) return <Loading />;
+  const localLabel = form.defaultCountry === 'IN' ? 'Indian' : countryName(form.defaultCountry) || 'Local';
 
   const save = async () => {
     setBusy('save');
@@ -100,6 +102,19 @@ export function SettingsPage() {
             form.saveUnknownSenders
               ? 'On: anyone who messages your number is added to Contacts straight away and gets all auto-replies, including catch-all ones. Best for a dedicated business number.'
               : 'Off (recommended for a personal or shared number): new people show in the Inbox marked “New”, with an “Add to contacts” button. They join Contacts when you add them, fill in your lead form, opt in (e.g. “JOIN”), or send a keyword whose auto-reply tags them. Catch-all auto-replies only answer saved contacts.'
+          }
+        />
+      </Card>
+
+      <Card title="Indian and international numbers" subtitle="Every number is checked for its country, so you can filter and message local and overseas customers separately.">
+        <Toggle
+          checked={form.countryTags}
+          onChange={countryTags => setForm({ ...form, countryTags })}
+          label={`Tag numbers “${localLabel}” or “International”`}
+          description={
+            form.countryTags
+              ? `On: every number added (imports, lead forms, sheets, people who message you) gets the “${localLabel}” or “International” tag. Use the tags in segments and campaigns, or the “All numbers” filter on Contacts and Leads. You can rename the tags.`
+              : `Off: no tags are added. The “All numbers” filter on Contacts and Leads still separates ${localLabel} numbers from international ones.`
           }
         />
       </Card>

@@ -41,7 +41,22 @@ globalThis.UrlFetchApp = {
     return { getResponseCode: () => out.code, getContentText: () => out.text };
   },
 };
+state.triggers ??= [];
+globalThis.ScriptApp = {
+  getProjectTriggers: () => state.triggers.map(t => ({ getHandlerFunction: () => t.handler })),
+  newTrigger: handler => {
+    const trigger = { handler };
+    const builder = {
+      timeBased: () => builder,
+      everyMinutes: n => ((trigger.everyMinutes = n), builder),
+      create: () => state.triggers.push(trigger),
+    };
+    return builder;
+  },
+};
 process.env.TZ = 'UTC';
-new Function(`${readFileSync(scriptPath, 'utf8')}\nsendNewLeads();`)();
+// The entry point is what the business runs: "setup" once by hand, then "sendNewLeads" every minute.
+const entry = state.entry === 'setup' ? 'setup' : 'sendNewLeads';
+new Function(`${readFileSync(scriptPath, 'utf8')}\n${entry}();`)();
 state.sheets = sheets.map(s => ({ ...s, values: s.values.map(r => r.map(v => (v instanceof Date ? { $date: v.toISOString() } : v))) }));
 writeFileSync(statePath, JSON.stringify(state));

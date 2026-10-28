@@ -8,6 +8,7 @@
  * webhooks, delivery/read receipts and customer replies arrive over HTTP.
  */
 import { mkdtempSync } from 'node:fs';
+import { crc32, deflateSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +24,37 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FIRST = ['Aarav', 'Priya', 'Rohan', 'Ananya', 'Vikram', 'Meera', 'Karthik', 'Sneha', 'Arjun', 'Divya', 'Rahul', 'Isha', 'Aditya', 'Kavya', 'Nikhil', 'Pooja', 'Siddharth', 'Neha', 'Varun', 'Riya', 'Manish', 'Tanvi', 'Harsh', 'Anjali', 'Kunal', 'Shreya', 'Amit', 'Nisha', 'Yash', 'Aditi', 'Rajesh', 'Swati', 'Deepak', 'Lakshmi', 'Suresh', 'Farah', 'Imran', 'Zoya', 'Gaurav', 'Pallavi', 'Naveen', 'Asha', 'Ravi', 'Sunita', 'Tarun', 'Bhavna', 'Omkar', 'Jyoti'];
 const LAST = ['Sharma', 'Iyer', 'Reddy', 'Nair', 'Gupta', 'Kulkarni', 'Menon', 'Rao', 'Singh', 'Patel', 'Joshi', 'Das', 'Khan', 'Bose', 'Pillai', 'Shetty'];
 const CITIES = ['Bengaluru', 'Mumbai', 'Pune', 'Chennai', 'Hyderabad', 'Delhi', 'Kochi'];
+
+/** A small PNG "photo" (a cup on a warm background) for the Inbox demo. */
+function demoPhoto(): string {
+  const w = 360;
+  const h = 240;
+  const raw = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = y * (w * 3 + 1) + 1 + x * 3;
+      const cup = (x - 180) ** 2 / 70 ** 2 + (y - 135) ** 2 / 60 ** 2 < 1 && y > 110;
+      const handle = Math.abs(Math.hypot(x - 255, y - 145) - 22) < 7;
+      const [r, g, b] = cup || handle ? [250, 246, 238] : [196 - y / 6, 120 - y / 8, 60 + x / 12];
+      raw[o] = r;
+      raw[o + 1] = g;
+      raw[o + 2] = b;
+    }
+  }
+  const chunk = (type: string, data: Buffer) => {
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(data.length, 0);
+    head.write(type, 4, 'ascii');
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'ascii'), data])) >>> 0, 0);
+    return Buffer.concat([head, data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]).toString('base64');
+}
 
 function rng(seed: number) {
   let s = seed;
@@ -212,7 +244,9 @@ async function main(): Promise<void> {
     offset = -Math.floor(random() * 28 + 1) * 86_400_000 - Math.floor(random() * 36_000_000);
     const source = sources[random() < 0.6 ? 0 : 1];
     const name = `${FIRST[(i + 7) % FIRST.length]} ${LAST[(i + 3) % LAST.length]}`;
-    const result = s.leads.receive(source, { name, phone: `98860${String(20000 + i * 211).slice(-5)}`, city: CITIES[i % CITIES.length] });
+    const fields: Record<string, string> = { name, phone: `98860${String(20000 + i * 211).slice(-5)}`, city: CITIES[i % CITIES.length] };
+    if (source.kind === 'google_sheet') fields['Sheet tab'] = random() < 0.65 ? 'Instagram leads' : 'Facebook leads';
+    const result = s.leads.receive(source, fields);
     if (!result.ok) continue;
     const roll = random();
     const stage = roll < 0.35 ? 'untouched' : roll < 0.6 ? 'warm' : roll < 0.8 ? 'cold' : 'closed';
@@ -234,6 +268,71 @@ async function main(): Promise<void> {
   offset = -86_400_000;
   s.leads.receive(sources[0], { name: 'Duplicate entry', phone: '98860 20000' });
   offset = 0;
+
+  // The ads sheet has three tabs (its script checked in); a second sheet isn't connected yet.
+  s.leads.sheetSync(s.leads.get(sources[1].id), ['Instagram leads', 'Facebook leads', 'Old leads 2025']);
+  s.leads.create({ name: 'Franchise enquiries sheet', kind: 'google_sheet', actions: { tagIds: [] } });
+
+  // Customers abroad: tagged "International" automatically, like every number is tagged.
+  for (const [phone, name, city] of [
+    ['+44 7400 123456', 'Oliver Brown', 'London'],
+    ['+971 50 123 4567', 'Fatima Khan', 'Dubai'],
+    ['+1 415 555 2671', 'Emily Chen', 'San Francisco'],
+    ['+65 9123 4567', 'Wei Ling Tan', 'Singapore'],
+  ]) {
+    s.contacts.upsert({ phone, name, consent: 'opted_in', consentSource: 'Store checkout opt-in', attributes: { city } });
+  }
+
+  // Chats already on the phone: copied into the Inbox when the number connects (groups are left out).
+  const chatOf = (phone: string) => `${phone}@c.us`;
+  const ago = (minutes: number) => Math.floor((Date.now() - minutes * 60_000) / 1000);
+  const meera = chatOf('919845012345');
+  const oliver = chatOf('447400123456');
+  fake.chats.set(session.id, [
+    { id: meera, name: 'Meera (wholesale)', kind: 'individual', unreadCount: 1 },
+    { id: oliver, name: 'Oliver Brown', kind: 'individual', unreadCount: 0 },
+    { id: '120363000000000@g.us', name: 'Family', isGroup: true, kind: 'group' },
+  ]);
+  const own = (chat: string, id: string, body: string, minutes: number, fromMe = false, type = 'text') => ({
+    id,
+    from: fromMe ? '919900011122@c.us' : chat,
+    to: fromMe ? chat : '919900011122@c.us',
+    body,
+    type,
+    timestamp: ago(minutes),
+    fromMe,
+    kind: 'individual',
+  });
+  fake.history.set(meera, [
+    own(meera, 'h_m1', 'Hi! Do you supply 20 kg of Assam CTC every month?', 9 * 1440),
+    own(meera, 'h_m2', 'Yes, we do. ₹380/kg for 20 kg, delivered free in Bengaluru.', 9 * 1440 - 30, true),
+    own(meera, 'h_m3', '', 9 * 1440 - 40, false, 'image'),
+    own(meera, 'h_m4', 'That is our shop. Can you send a sample first?', 9 * 1440 - 41),
+    own(meera, 'h_m5', 'Sure, sending 250 g tomorrow 👍', 9 * 1440 - 60, true),
+    own(meera, 'h_m6', 'Sample was great. Please send the invoice for 20 kg.', 2 * 1440),
+  ]);
+  fake.history.set(oliver, [
+    own(oliver, 'h_o1', 'Hello from London! Do you ship Masala Chai to the UK?', 4 * 1440),
+    own(oliver, 'h_o2', 'Yes! UK delivery takes 7–10 days. Shipping is ₹900 per order.', 4 * 1440 - 20, true),
+  ]);
+  // A photo a customer sent today, and the owner's answer typed on the phone.
+  fake.media.set('demo_photo', { mimetype: 'image/png', base64: demoPhoto() });
+  offset = -15 * 60_000;
+  await s.inbound.handle({
+    event: 'message.received',
+    sessionId: session.id,
+    data: { id: 'demo_photo', from: '919900123456@c.us', body: 'This one, in 500 g?', type: 'image', kind: 'individual', media: { mimetype: 'image/png' }, contact: { pushName: 'Kiran' } },
+  });
+  offset = -8 * 60_000;
+  await s.inbound.handle({
+    event: 'message.sent',
+    sessionId: session.id,
+    data: { id: 'demo_phone_reply', from: '919900011122@c.us', to: '919900123456@c.us', chatId: '919900123456@c.us', body: 'Yes! 500 g is ₹450. Shall I keep one for you?', type: 'text', fromMe: true, kind: 'individual' },
+  });
+  offset = 0;
+  // Seeding ticked the dispatcher before these chats existed: copy them now.
+  s.history.start(session.id);
+  await s.history.idle();
 
   // ---------------------------------------------------------------- serve
   const app = await buildApp(platform, { staticDir: join(here, '..', 'dist', 'web') });

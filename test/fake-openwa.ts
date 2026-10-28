@@ -47,6 +47,10 @@ export interface FakeOpenWA {
   /** Numbers (digits) that are NOT on WhatsApp. Everything else "exists". */
   notOnWhatsApp: Set<string>;
   lidMap: Map<string, string>;
+  /** Chats and their history per session, and stored media by message id (for history sync tests). */
+  chats: Map<string, Array<{ id: string; name?: string; isGroup?: boolean; kind?: string; timestamp?: number; unreadCount?: number }>>;
+  history: Map<string, Array<Record<string, unknown>>>;
+  media: Map<string, { mimetype: string; base64: string }>;
   /** Failures returned for the next send calls, in order. */
   failNextSends: Failure[];
   /** When set, every send fails with this until cleared. */
@@ -128,6 +132,9 @@ export async function startFakeOpenWA(options: { apiKey?: string; port?: number;
     sent: [],
     notOnWhatsApp: new Set(),
     lidMap: new Map(),
+    chats: new Map(),
+    history: new Map(),
+    media: new Map(),
     failNextSends: [],
     failAllSends: null,
   };
@@ -224,6 +231,23 @@ export async function startFakeOpenWA(options: { apiKey?: string; port?: number;
         return json(res, 200, { contactId, phone: state.lidMap.get(contactId) ?? null });
       }
 
+      if (rest[0] === 'chats' && rest.length === 1 && method === 'GET') {
+        const limit = Number(url.searchParams.get('limit') ?? 100);
+        const offset = Number(url.searchParams.get('offset') ?? 0);
+        return json(res, 200, (state.chats.get(session.id) ?? []).slice(offset, offset + limit));
+      }
+      if (rest[0] === 'messages' && rest[2] === 'history' && method === 'GET') {
+        const chatId = decodeURIComponent(rest[1]);
+        const limit = Number(url.searchParams.get('limit') ?? 50);
+        return json(res, 200, (state.history.get(chatId) ?? []).slice(-limit));
+      }
+      if (rest[0] === 'messages' && rest[3] === 'media' && method === 'GET') {
+        const media = state.media.get(decodeURIComponent(rest[2]));
+        if (!media) return json(res, 404, { statusCode: 404, message: 'No stored media' });
+        res.writeHead(200, { 'Content-Type': media.mimetype });
+        res.end(Buffer.from(media.base64, 'base64'));
+        return;
+      }
       if (rest[0] === 'messages' && method === 'POST' && rest[1]?.startsWith('send-')) {
         const kind = rest[1].slice(5) as SentRecord['kind'];
         if (session.status !== 'ready') return json(res, 409, { statusCode: 409, message: 'Session is not ready' });

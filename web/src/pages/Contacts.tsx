@@ -38,6 +38,7 @@ import { TagPicker, useTags } from '../components/pickers';
 import { Bubble } from '../components/composer';
 import { displayName, formatDateTime, formatNumber, formatPhone, relativeTime } from '../format';
 import { RemarkCell, StageSelect } from './Leads';
+import { OriginSelect } from '../country';
 import { ColumnPicker, ManageFieldsModal, columnCell, columnClass, columnLabel, fieldLabel, useContactColumns } from './ContactColumns';
 
 const AUDIENCE_HANDOFF = 'wa-reach:audience';
@@ -766,6 +767,7 @@ export function ContactsPage() {
               <option value="unknown">Not recorded</option>
               <option value="opted_out">Opted out</option>
             </select>
+            <OriginSelect value={filter.origin} onChange={origin => setFilter({ ...filter, origin })} />
             <select className="select sm" style={{ width: 'auto' }} value={filter.waStatus ?? ''} onChange={e => setFilter({ ...filter, waStatus: (e.target.value || undefined) as ContactFilter['waStatus'] })} aria-label="Filter by WhatsApp status">
               <option value="">Any WhatsApp status</option>
               <option value="valid">On WhatsApp</option>

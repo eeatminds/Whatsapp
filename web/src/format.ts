@@ -28,8 +28,10 @@ export function displayName(contact: { name: string | null; phone: string }): st
 export function initials(name: string | null, phone: string): string {
   const source = name?.trim();
   if (!source) return phone.slice(-2);
-  const parts = source.split(/\s+/);
-  return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase();
+  // Words only: "Meera (wholesale)" is "MW", not "M(".
+  const parts = source.split(/\s+/).map(w => w.replace(/^[^\p{L}\p{N}]+/u, '')).filter(Boolean);
+  const letters = [...(parts[0] ?? '')].slice(0, 1).join('') + [...(parts[1] ?? '')].slice(0, 1).join('');
+  return letters ? letters.toUpperCase() : phone.slice(-2);
 }
 
 export function formatDateTime(iso: string | null | undefined): string {

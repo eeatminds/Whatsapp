@@ -653,6 +653,9 @@ export class Platform {
       const fixed = services.leads.repair();
       if (fixed) this.log.info(`Filled in names/emails for ${fixed} leads of ${tenant}`);
       services.contacts.tidyDateValues(tidyValue);
+      // Numbers added before countries were tracked get their country and Indian/International tag.
+      const tagged = services.contacts.assignCountries();
+      if (tagged) this.log.info(`Worked out the country of ${tagged} numbers for ${tenant}`);
     } catch (error) {
       this.log.warn(`Could not tidy leads for ${tenant}: ${error instanceof Error ? error.message : String(error)}`);
     }

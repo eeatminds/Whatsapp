@@ -9,12 +9,20 @@
  */
 export function sheetScript(url: string): string {
   return `// WA Reach: sends new rows from this Google Sheet to your WhatsApp automation.
-// Choose which tabs are read in WA Reach (your lead source → Sheet tabs); this code stays the same.
+// After pasting: click Save, then Run (with "setup" chosen next to it) and allow access.
+// Then choose which tabs are read in WA Reach (your lead source → Sheet tabs); this code stays the same.
 // Row 1 of each tab must be the column names, with a phone number column.
 const WA_REACH_LINK = '${url}';
 const STATUS_COLUMN = 'WA Status';
 const NOT_SENT = 'Not sent: was in the sheet before WA Reach';
 const MAX_PER_RUN = 100;
+
+// Run once: checks the sheet every minute from now on, and shows your tabs in WA Reach right away.
+function setup() {
+  const running = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'sendNewLeads');
+  if (!running) ScriptApp.newTrigger('sendNewLeads').timeBased().everyMinutes(1).create();
+  sendNewLeads();
+}
 
 function sendNewLeads() {
   const book = SpreadsheetApp.getActiveSpreadsheet();

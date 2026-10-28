@@ -1084,6 +1084,20 @@ table.table {
   max-height: 260px;
   object-fit: cover;
 }
+.bubble audio {
+  display: block;
+  width: 260px;
+  max-width: 100%;
+  margin: 0 0 4px;
+}
+.bubble a.doc {
+  color: inherit;
+  text-decoration: none;
+}
+.thread-earlier {
+  align-self: center;
+  margin-bottom: 4px;
+}
 .bubble .doc {
   display: flex;
   align-items: center;
@@ -1582,4 +1596,10 @@ table.table {
 .drawer-lead { display: flex; gap: 16px; align-items: flex-start; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
 .drawer-lead .remark-view { margin: 0; }
 @media (max-width: 520px) { .drawer-lead { flex-direction: column; } }
-.sheet-tabs { display: grid; gap: 6px; padding: 10px 12px; margin-top: 2px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.sheet-tab-list { display: grid; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.sheet-tab { display: flex; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; background: var(--surface); }
+.sheet-tab + .sheet-tab { border-top: 1px solid var(--border); }
+.sheet-tab .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.sheet-tab:not(.on) .name { color: var(--text-muted); }
+.sheet-tab:hover { background: var(--surface-2); }
+.sheet-tab input { width: 18px; height: 18px; flex: none; }

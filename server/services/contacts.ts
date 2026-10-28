@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Core } from '../context.js';
 import { nowIso, parseJson } from '../db/database.js';
 import { badRequest, notFound } from '../lib/errors.js';
-import { normalizePhone, spreadsheetPhone } from '../lib/phone.js';
+import { chatIdFor, countryName, countryOfPhone, normalizePhone, phoneFromChatId, spreadsheetPhone } from '../lib/phone.js';
 import { startOfLocalDay } from '../lib/time.js';
 import { parseCsv, toCsv } from '../lib/csv.js';
 import { renameVariable } from '../lib/template.js';
@@ -22,6 +22,7 @@ const CHANNEL_NAMES: Record<string, string> = {
   import: 'CSV import',
   manual: 'Added manually',
   inbound: 'Messaged on WhatsApp',
+  whatsapp: 'Chat on your WhatsApp',
   'auto-reply': 'WhatsApp keyword',
   'opt-in': 'Opted in on WhatsApp',
   'lead-form': 'Lead form',
@@ -55,9 +56,17 @@ export interface ContactRow {
   lead_source_id: number | null;
   /** 0: someone who messaged in and is only in the Inbox, not (yet) a contact. */
   saved: number;
+  /** ISO country of the number ('ZZ': unknown); null until worked out. */
+  country: string | null;
   created_at: string;
   updated_at: string;
 }
+
+/** The tag for numbers from the business's own country: "Indian" for India, else the country's name. */
+export function localTagName(home: string): string {
+  return home.toUpperCase() === 'IN' ? 'Indian' : countryName(home);
+}
+export const INTERNATIONAL_TAG = 'International';
 
 export interface Contact {
   id: number;
@@ -85,6 +94,8 @@ export interface Contact {
   channelKey: string;
   /** False for people who only messaged in: shown in the Inbox, not in Contacts. */
   saved: boolean;
+  /** The number's country (ISO code), when known. */
+  country: string | null;
   createdAt: string;
   updatedAt: string;
   tags: Tag[];
@@ -115,6 +126,7 @@ export function toContact(row: ContactRow, tags: Tag[] = [], sourceNames: Map<nu
     channel: row.lead_source_id ? (sourceNames.get(row.lead_source_id) ?? 'Lead form') : channelName(row.source),
     channelKey: row.lead_source_id ? `src:${row.lead_source_id}` : (row.source ?? 'other'),
     saved: row.saved !== 0,
+    country: row.country && row.country !== 'ZZ' ? row.country : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     tags,
@@ -185,6 +197,8 @@ export const contactFilterSchema = z.object({
   /** A custom field: contacts that have it, or whose value contains `fieldValue`. */
   field: z.string().regex(/^[a-z0-9_]{1,64}$/).optional(),
   fieldValue: z.string().trim().max(100).optional(),
+  /** Numbers from the business's own country (e.g. Indian) or from anywhere else. */
+  origin: z.enum(['local', 'international']).optional(),
   /** Added on or after / before these dates (YYYY-MM-DD, in the business's time zone). */
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -352,6 +366,14 @@ export class ContactsService {
     if (filter.from) parts.push({ sql: 'c.created_at >= ?', params: [this.dayStart(filter.from)] });
     if (filter.to) parts.push({ sql: 'c.created_at < ?', params: [this.dayStart(filter.to, 1)] });
     if (filter.waStatus) parts.push({ sql: 'c.wa_status = ?', params: [filter.waStatus] });
+    if (filter.origin) {
+      const home = this.settings.get().defaultCountry;
+      parts.push(
+        filter.origin === 'local'
+          ? { sql: 'c.country = ?', params: [home] }
+          : { sql: 'c.country IS NOT NULL AND c.country <> ?', params: [home] },
+      );
+    }
     if (filter.ids) {
       if (filter.ids.length === 0) parts.push({ sql: '0', params: [] });
       else parts.push({ sql: `c.id IN (SELECT value FROM json_each(?))`, params: [JSON.stringify(filter.ids)] });
@@ -472,6 +494,7 @@ export class ContactsService {
       }
       if (data.consent) this.setConsent(contactId, data.consent, data.consentSource ?? data.source ?? 'manual');
       this.addTags([contactId], tagIds);
+      this.assignCountry(contactId);
       return { contact: this.get(contactId), created };
     });
   }
@@ -487,7 +510,7 @@ export class ContactsService {
           const clash = this.findByPhone(phone);
           if (clash) throw badRequest(`Another contact already uses +${phone}`);
           this.core.db.run(
-            "UPDATE contacts SET phone = ?, wa_status = 'unknown', wa_chat_id = NULL, wa_checked_at = NULL WHERE id = ?",
+            "UPDATE contacts SET phone = ?, wa_status = 'unknown', wa_chat_id = NULL, wa_checked_at = NULL, country = NULL WHERE id = ?",
             phone,
             contactId,
           );
@@ -507,6 +530,7 @@ export class ContactsService {
         this.addTags([contactId], data.tagIds);
       }
       this.core.db.run('UPDATE contacts SET updated_at = ? WHERE id = ?', now, contactId);
+      this.assignCountry(contactId);
       return this.get(contactId);
     });
   }
@@ -776,7 +800,113 @@ export class ContactsService {
       at,
     ).lastInsertRowid;
     this.applySuppression(id, phone);
+    this.assignCountry(id);
     return { row: this.row(id), created: true };
+  }
+
+  /**
+   * The contact for a WhatsApp chat copied into the Inbox (a message typed on the phone, or chat
+   * history). Someone new is kept for the Inbox only, never added to Contacts or campaigns.
+   */
+  forChat(phone: string, chatId: string, name: string | null, lastInboundAt: string | null = null): ContactRow {
+    const existing = this.findByPhone(phone);
+    const now = this.now();
+    // Messages are sent to the number's own chat, never to a privacy id (@lid) that hides it.
+    chatId = phoneFromChatId(chatId) ? chatId : chatIdFor(phone);
+    if (existing) {
+      this.core.db.run(
+        `UPDATE contacts SET wa_status = 'valid', wa_chat_id = COALESCE(wa_chat_id, ?), name = COALESCE(name, ?),
+                last_inbound_at = CASE WHEN ? IS NOT NULL AND (last_inbound_at IS NULL OR last_inbound_at < ?) THEN ? ELSE last_inbound_at END
+          WHERE id = ?`,
+        chatId,
+        name,
+        lastInboundAt,
+        lastInboundAt,
+        lastInboundAt,
+        existing.id,
+      );
+      return this.row(existing.id);
+    }
+    const id = this.core.db.run(
+      `INSERT INTO contacts (phone, name, wa_status, wa_chat_id, source, last_inbound_at, saved, created_at, updated_at)
+       VALUES (?, ?, 'valid', ?, 'whatsapp', ?, 0, ?, ?)`,
+      phone,
+      name,
+      chatId,
+      lastInboundAt,
+      now,
+      now,
+    ).lastInsertRowid;
+    this.applySuppression(id, phone);
+    this.assignCountry(id);
+    return this.row(id);
+  }
+
+  // ---------------------------------------------------------------- Indian / International
+
+  /**
+   * The two country tags, created when first needed. Their ids are remembered, so a business can
+   * rename them ("India", "NRI") and new numbers still get the renamed tag.
+   */
+  private countryTagIds(): { local: number; international: number } {
+    const home = this.settings.get().defaultCountry;
+    const stored = parseJson<{ home?: string; local?: number; international?: number }>(
+      this.core.db.get<{ value: string }>("SELECT value FROM settings WHERE key = 'country_tags'")?.value,
+      {},
+    );
+    const valid = (id: number | undefined) => (id && this.tags.exists(id) ? id : null);
+    const local = (stored.home === home ? valid(stored.local) : null) ?? this.tags.ensure(localTagName(home));
+    const international = valid(stored.international) ?? this.tags.ensure(INTERNATIONAL_TAG);
+    if (stored.home !== home || stored.local !== local || stored.international !== international) {
+      this.core.db.run(
+        "INSERT INTO settings (key, value) VALUES ('country_tags', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        JSON.stringify({ home, local, international }),
+      );
+    }
+    return { local, international };
+  }
+
+  /** Tag one contact by its country, replacing the other country tag (no automations are started). */
+  private tagByCountry(contactId: number, country: string, tags: { local: number; international: number }, home: string): void {
+    const [add, drop] = country === home ? [tags.local, tags.international] : [tags.international, tags.local];
+    this.core.db.run('DELETE FROM contact_tags WHERE contact_id = ? AND tag_id = ?', contactId, drop);
+    this.core.db.run('INSERT OR IGNORE INTO contact_tags (contact_id, tag_id, created_at) VALUES (?, ?, ?)', contactId, add, this.now());
+  }
+
+  /** Work out the country of a new or changed number and tag it Indian / International. */
+  assignCountry(contactId: number): void {
+    const row = this.core.db.get<{ phone: string; country: string | null }>('SELECT phone, country FROM contacts WHERE id = ?', contactId);
+    if (!row || row.country !== null) return;
+    const country = countryOfPhone(row.phone) ?? 'ZZ';
+    this.core.db.run('UPDATE contacts SET country = ? WHERE id = ?', country, contactId);
+    const settings = this.settings.get();
+    if (settings.countryTags) this.tagByCountry(contactId, country, this.countryTagIds(), settings.defaultCountry);
+  }
+
+  /** Every number whose country is not worked out yet (after an import, or once after an update). */
+  assignCountries(): number {
+    let total = 0;
+    for (;;) {
+      const rows = this.core.db.all<{ id: number }>('SELECT id FROM contacts WHERE country IS NULL LIMIT 500');
+      if (rows.length === 0) return total;
+      this.core.db.tx(() => {
+        for (const row of rows) this.assignCountry(row.id);
+      });
+      total += rows.length;
+    }
+  }
+
+  /** Tag everyone again by country (when the tags are turned on, or the business's country changes). */
+  retagCountries(): number {
+    const settings = this.settings.get();
+    if (!settings.countryTags) return 0;
+    this.assignCountries();
+    const tags = this.countryTagIds();
+    const rows = this.core.db.all<{ id: number; country: string }>('SELECT id, country FROM contacts WHERE country IS NOT NULL');
+    this.core.db.tx(() => {
+      for (const row of rows) this.tagByCountry(row.id, row.country, tags, settings.defaultCountry);
+    });
+    return rows.length;
   }
 
   recordValidation(contactId: number, exists: boolean, chatId: string | null): void {
@@ -934,6 +1064,7 @@ export class ContactsService {
         this.addTags([contactId], [...new Set(tagIds)]);
       }
     });
+    this.assignCountries();
     return result;
   }
 

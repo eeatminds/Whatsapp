@@ -65,7 +65,7 @@ function metaText(message: Record<string, any>): string {
  * these as `unknown` with an empty body; they never appear as texts on the phone, so they are
  * dropped instead of filling the inbox and creating contacts.
  */
-const NON_MESSAGE_TYPES = new Set([
+export const NON_MESSAGE_TYPES = new Set([
   'unknown',
   'revoked',
   'call',
@@ -95,17 +95,54 @@ export interface WebhookEnvelope {
   data?: Record<string, unknown>;
 }
 
-interface IncomingMessage {
+export interface IncomingMessage {
   id?: string;
   from?: string;
+  to?: string;
+  chatId?: string;
   body?: string;
   type?: string;
   timestamp?: number;
   isGroup?: boolean;
   kind?: string;
   fromMe?: boolean;
+  isStatusBroadcast?: boolean;
   senderPhone?: string | null;
   contact?: { name?: string; pushName?: string };
+  media?: { mimetype?: string; filename?: string };
+  location?: { latitude?: number; longitude?: number; description?: string; address?: string };
+}
+
+/** Longest message text kept in the Inbox (WhatsApp's own limit is 65,536 characters). */
+const MAX_BODY = 65_536;
+
+/**
+ * What of a WhatsApp message goes into the Inbox: its text (a caption for files, a place for
+ * locations) and what file it carries. Null for things that are not messages a person wrote.
+ */
+export function copyOf(message: IncomingMessage): { type: string; body: string | null; mediaMime: string | null; mediaName: string | null } | null {
+  const type = message.type ?? 'text';
+  if (NON_MESSAGE_TYPES.has(type) || message.isStatusBroadcast) return null;
+  let body = typeof message.body === 'string' ? message.body : '';
+  if (type === 'location' && (message.location || /^[A-Za-z0-9+/=]{200,}$/.test(body))) {
+    // A location's body is a base64 map picture; keep the place and a map link instead.
+    const place = [message.location?.description, message.location?.address].filter(Boolean).join(', ');
+    const lat = Number(message.location?.latitude);
+    const lng = Number(message.location?.longitude);
+    const link = Number.isFinite(lat) && Number.isFinite(lng) && (lat || lng) ? `https://maps.google.com/?q=${lat},${lng}` : '';
+    body = [place, link].filter(Boolean).join('\n');
+  }
+  if ((type === 'text' || type === 'chat') && !body.trim()) return null;
+  const mimetype = typeof message.media?.mimetype === 'string' ? message.media.mimetype.slice(0, 100) : null;
+  const filename = typeof message.media?.filename === 'string' ? message.media.filename.slice(0, 255) : null;
+  return { type: type === 'chat' ? 'text' : type, body: body ? body.slice(0, MAX_BODY) : null, mediaMime: mimetype || null, mediaName: filename || null };
+}
+
+/** WhatsApp chats with one person (not groups, channels, broadcasts or status). */
+export function isPersonChat(chatId: string | undefined, kind?: string, isGroup?: boolean): boolean {
+  if (!chatId || isGroup) return false;
+  if (kind && kind !== 'individual') return false;
+  return /@(c\.us|s\.whatsapp\.net|lid)$/.test(chatId);
 }
 
 export type InboundOutcome =
@@ -120,6 +157,7 @@ export type InboundOutcome =
   | 'opted_out'
   | 'opted_in'
   | 'auto_reply'
+  | 'sent_from_phone'
   | 'received';
 
 /**
@@ -139,6 +177,8 @@ export class InboundService {
     private readonly sessions: SessionsService,
     private readonly bus: Bus,
     private readonly official?: OfficialNumbersService,
+    /** How long to wait before treating an echoed message as typed on the phone (see handleOwnMessage). */
+    private readonly phoneReadDelayMs = 15_000,
   ) {}
 
   private alreadyProcessed(key: string | undefined): boolean {
@@ -175,25 +215,53 @@ export class InboundService {
         return 'session_status';
       case 'message.received':
         return this.handleMessage(envelope.sessionId, data as IncomingMessage);
+      case 'message.sent':
+        return this.handleOwnMessage(envelope.sessionId, data as IncomingMessage);
       default:
         return 'ignored';
     }
   }
 
   private async resolvePhone(sessionId: string, message: IncomingMessage): Promise<string | null> {
-    const direct = phoneFromChatId(message.from);
-    if (direct) return direct;
-    if (typeof message.senderPhone === 'string' && /^\d{6,20}$/.test(message.senderPhone)) return message.senderPhone;
-    if (message.from?.endsWith('@lid')) {
-      // WhatsApp privacy ids hide the number; ask the gateway for its best-effort mapping.
-      try {
-        const resolved = await this.core.openwa.resolvePhone(sessionId, message.from);
-        if (resolved.phone && /^\d{6,20}$/.test(resolved.phone)) return resolved.phone;
-      } catch (error) {
-        this.core.log.warn(`Could not resolve ${message.from} to a phone number: ${String(error)}`);
-      }
-    }
-    return null;
+    return resolveChatPhone(this.core, sessionId, message.from, message.senderPhone);
+  }
+
+  /**
+   * A message the business sent from the phone itself (or WhatsApp Web), so the Inbox shows the
+   * whole conversation. WhatsApp also echoes WA Reach's own sends here; those are recorded once.
+   * Nothing is triggered: no auto-replies, no reports, no new contacts in lists.
+   */
+  private async handleOwnMessage(sessionId: string, message: IncomingMessage): Promise<InboundOutcome> {
+    if (!message.fromMe || !message.id) return 'ignored';
+    const chatId = message.chatId ?? message.to;
+    if (!isPersonChat(chatId, message.kind, message.isGroup)) return 'ignored';
+    const copy = copyOf(message);
+    if (!copy) return 'ignored';
+    if (this.core.db.get('SELECT 1 FROM messages WHERE session_id = ? AND wa_message_id = ?', sessionId, message.id)) return 'duplicate_message';
+    const phone = await resolveChatPhone(this.core, sessionId, chatId, null);
+    if (!phone) return 'unresolved_sender';
+    const now = this.core.clock();
+    const at = nowIso(typeof message.timestamp === 'number' && message.timestamp > 0 ? new Date(Math.min(message.timestamp * 1000, now.getTime())) : now);
+    return this.core.db.tx(() => {
+      const contact = this.contacts.forChat(phone, chatId!, null);
+      const inserted = this.messages.recordCopy({ contactId: contact.id, sessionId, chatId: chatId!, direction: 'out', waMessageId: message.id!, ...copy, at, seen: true });
+      if (!inserted) return 'duplicate_message' as const;
+      this.core.db.run('UPDATE contacts SET last_outbound_at = MAX(COALESCE(last_outbound_at, ?), ?) WHERE id = ?', at, at, contact.id);
+      // Answering on the phone reads the chat, as it does in WhatsApp. WhatsApp also echoes WA Reach's
+      // own sends here, sometimes before the send is recorded; so the chat is only marked read once
+      // the message is known to be from the phone (a campaign must never hide an unread reply).
+      const markRead = () => {
+        try {
+          const row = this.core.db.get<{ source_type: string }>('SELECT source_type FROM messages WHERE session_id = ? AND wa_message_id = ?', sessionId, message.id);
+          if (row?.source_type === 'phone') this.messages.markSeenUntil(contact.id, at);
+        } catch {
+          // The business's database was closed (shutdown).
+        }
+      };
+      if (this.phoneReadDelayMs > 0) setTimeout(markRead, this.phoneReadDelayMs).unref?.();
+      else markRead();
+      return 'sent_from_phone' as const;
+    });
   }
 
   /**
@@ -263,9 +331,8 @@ export class InboundService {
     if (message.fromMe) return 'ignored';
     const kind = message.kind ?? (message.isGroup ? 'group' : 'individual');
     if (kind !== 'individual') return 'ignored';
-    const type = message.type ?? 'text';
-    const text = typeof message.body === 'string' ? message.body : '';
-    if (NON_MESSAGE_TYPES.has(type) || ((type === 'text' || type === 'chat') && !text.trim())) return 'ignored';
+    const copy = copyOf(message);
+    if (!copy) return 'ignored';
 
     const phone = await this.resolvePhone(sessionId, message);
     if (!phone) {
@@ -284,15 +351,18 @@ export class InboundService {
 
     return this.core.db.tx(() => {
       const { row: contact } = this.contacts.touchInbound(phone, chatId, pushName, at, save);
-      const body = typeof message.body === 'string' ? message.body : '';
+      // Keywords and auto-replies read what the person wrote (a caption for photos); not map links.
+      const body = copy.type === 'location' ? '' : (copy.body ?? '');
       const inserted = this.messages.recordInbound({
         contactId: contact.id,
         sessionId,
         chatId,
         waMessageId: message.id ?? null,
-        body: body || null,
-        type: message.type ?? 'text',
+        body: copy.body,
+        type: copy.type,
         at,
+        mediaMime: copy.mediaMime,
+        mediaName: copy.mediaName,
       });
       if (!inserted) return 'duplicate_message' as const;
 
@@ -334,4 +404,23 @@ export class InboundService {
     const cutoff = nowIso(new Date(this.core.clock().getTime() - 7 * 86_400_000));
     return this.core.db.run('DELETE FROM webhook_receipts WHERE received_at < ?', cutoff).changes;
   }
+}
+
+/**
+ * The phone number behind a WhatsApp chat id. Privacy ids (@lid) hide it, so the gateway's
+ * best-effort mapping is asked; null when the number can't be known.
+ */
+export async function resolveChatPhone(core: Core, sessionId: string, chatId: string | undefined, senderPhone: string | null | undefined): Promise<string | null> {
+  const direct = phoneFromChatId(chatId);
+  if (direct) return direct;
+  if (typeof senderPhone === 'string' && /^\d{6,20}$/.test(senderPhone)) return senderPhone;
+  if (chatId?.endsWith('@lid')) {
+    try {
+      const resolved = await core.openwa.resolvePhone(sessionId, chatId);
+      if (resolved.phone && /^\d{6,20}$/.test(resolved.phone)) return resolved.phone;
+    } catch (error) {
+      core.log.warn(`Could not resolve ${chatId} to a phone number: ${String(error)}`);
+    }
+  }
+  return null;
 }

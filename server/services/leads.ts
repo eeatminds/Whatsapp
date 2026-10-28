@@ -48,16 +48,25 @@ export type LeadActions = z.infer<typeof actionsSchema>;
 
 const tabName = z.string().trim().min(1).max(100);
 /**
- * Which tabs of a Google Sheet to read: all (new tabs too) or only the chosen ones; and whether rows
- * already in a tab when it is first read are left alone ("skip") or added as contacts without any
- * message ("import"). The sheet's script asks for these each minute, so changes need no new script.
+ * Which tabs of a Google Sheet to read: all (new tabs too), all except some (new tabs too), or only
+ * the chosen ones; and whether rows already in a tab when it is first read are left alone ("skip")
+ * or added as contacts without any message ("import"). The sheet's script asks for these each
+ * minute, so changes need no new script.
  */
 export const sheetSettingsSchema = z.object({
-  mode: z.enum(['all', 'only']).default('all'),
+  mode: z.enum(['all', 'except', 'only']).default('all'),
   selected: z.array(tabName).max(50).default([]),
+  excluded: z.array(tabName).max(50).default([]),
   existing: z.enum(['skip', 'import']).default('skip'),
 });
 export type SheetSettings = z.infer<typeof sheetSettingsSchema>;
+
+/** The tabs of a sheet that are read, given the tabs it has now. */
+export function tabsToRead(settings: SheetSettings, tabs: string[]): string[] {
+  if (settings.mode === 'only') return tabs.filter(t => settings.selected.includes(t));
+  if (settings.mode === 'except') return tabs.filter(t => !settings.excluded.includes(t));
+  return tabs;
+}
 
 interface SourceRow {
   id: number;
@@ -90,8 +99,8 @@ export interface LeadSource {
   fieldMap: FieldMap;
   /** Columns this source has sent, and what each became last time. */
   fieldsSeen: SeenField[];
-  /** Google Sheets only: the tabs the sheet reported and which ones are read. */
-  sheet: SheetSettings & { tabs: string[]; syncedAt: string | null };
+  /** Google Sheets only: the tabs the sheet reported, which ones are read, and leads from each. */
+  sheet: SheetSettings & { tabs: string[]; syncedAt: string | null; leadsByTab: Record<string, number> };
   url: string | null;
   received: number;
   failed: number;
@@ -333,9 +342,10 @@ export class LeadsService {
       fieldMap: fieldMapSchema.catch({}).parse(parseJson(row.field_map, {})),
       fieldsSeen: parseJson<SeenField[]>(row.fields_seen, []),
       sheet: {
-        ...sheetSettingsSchema.catch({ mode: 'all', selected: [], existing: 'skip' }).parse(parseJson(row.sheet_config, {})),
+        ...sheetSettingsSchema.catch({ mode: 'all', selected: [], excluded: [], existing: 'skip' }).parse(parseJson(row.sheet_config, {})),
         tabs: parseJson<string[]>(row.sheet_tabs, []),
         syncedAt: row.sheet_synced_at,
+        leadsByTab: row.kind === 'google_sheet' ? this.leadsByTab(row.id) : {},
       },
       url: this.url(row.token),
       received: row.received,
@@ -447,14 +457,23 @@ export class LeadsService {
   sheetSync(source: LeadSource, tabs: unknown): { tabs: string[]; existing: SheetSettings['existing'] } {
     const names = z.array(z.string()).max(200).catch([]).parse(tabs).map(t => t.trim().slice(0, 100)).filter(Boolean).slice(0, 50);
     this.core.db.run('UPDATE lead_sources SET sheet_tabs = ?, sheet_synced_at = ? WHERE id = ?', JSON.stringify(names), this.now(), source.id);
-    const read = source.sheet.mode === 'all' ? names : names.filter(n => source.sheet.selected.includes(n));
-    return { tabs: read, existing: source.sheet.existing };
+    return { tabs: tabsToRead(source.sheet, names), existing: source.sheet.existing };
+  }
+
+  /** Leads that came from each tab of a sheet (by their "Sheet tab" field). */
+  private leadsByTab(sourceId: number): Record<string, number> {
+    const rows = this.core.db.all<{ tab: string | null; n: number }>(
+      `SELECT CAST(json_extract(attributes, '$.sheet_tab') AS TEXT) AS tab, COUNT(*) AS n FROM contacts
+        WHERE lead_source_id = ? GROUP BY tab`,
+      sourceId,
+    );
+    return Object.fromEntries(rows.filter(r => r.tab).map(r => [r.tab!, r.n]));
   }
 
   setSheet(sourceId: number, input: unknown): LeadSource {
     this.row(sourceId);
     const settings = sheetSettingsSchema.parse(input);
-    if (settings.mode === 'only' && settings.selected.length === 0) throw badRequest('Choose at least one tab, or read all tabs');
+    if (settings.mode === 'only' && settings.selected.length === 0) throw badRequest('Tick at least one tab, or read new tabs automatically');
     this.core.db.run('UPDATE lead_sources SET sheet_config = ?, updated_at = ? WHERE id = ?', JSON.stringify(settings), this.now(), sourceId);
     return this.get(sourceId);
   }

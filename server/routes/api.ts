@@ -7,6 +7,10 @@ import { chatIdFor } from '../lib/phone.js';
 import { contactFilterSchema } from '../services/contacts.js';
 import { matchesRule, normalizeKeywordText } from '../services/auto-replies.js';
 import { ACCEPTED_MIME_TYPES } from '../services/media.js';
+import { mediaKind } from '../services/messages.js';
+
+/** Files from WhatsApp shown inside the Inbox; anything else (documents, odd types) is downloaded. */
+const INLINE_MEDIA = /^(image\/(jpeg|png|gif|webp)|video\/(mp4|webm|3gpp)|audio\/(ogg|mpeg|mp4|aac|amr|wav|webm|opus))$/;
 
 const idParam = z.object({ id: z.coerce.number().int().positive() });
 const sessionParam = z.object({ id: z.string().min(1).max(100) });
@@ -210,7 +214,7 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
          FROM campaign_recipients r JOIN campaigns c ON c.id = r.campaign_id WHERE r.contact_id = ? ORDER BY r.id DESC LIMIT 50`,
       id,
     );
-    return { contact, messages: s.messages.thread(id, 50), campaigns, sequences: s.sequences.contactEnrollments(id) };
+    return { contact, messages: s.messages.thread(id, 50).messages, campaigns, sequences: s.sequences.contactEnrollments(id) };
   });
 
   app.patch('/contacts/:id', async request => s.contacts.update(params(idParam, request).id, request.body));
@@ -391,13 +395,50 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
       .parse(request.query);
     const view = query.view ?? (query.unread === 'true' ? 'unread' : 'all');
     return {
-      items: s.messages.conversations({ q: query.q, unreadOnly: view === 'unread', repliedOnly: view === 'replied' }),
+      items: s.messages.conversations({ q: query.q, unreadOnly: view === 'unread', repliedOnly: view === 'replied', limit: 500 }),
       unread: s.messages.unreadCount(),
     };
   });
 
+  // Copying chats from the phone: one row per number linked by QR code.
+  app.get('/inbox/sync', async () => {
+    const numbers = (await s.sessions.list()).filter(n => n.channel === 'qr');
+    return { numbers: numbers.map(n => ({ sessionId: n.id, name: n.name, status: n.status, sync: s.history.status(n.id) })) };
+  });
+  app.post('/inbox/sync', async request => {
+    const { sessionId } = z.object({ sessionId: z.string().min(1).max(100).optional() }).parse(request.body ?? {});
+    const ready = (await s.sessions.list()).filter(n => n.channel === 'qr' && n.status === 'ready' && (!sessionId || n.id === sessionId));
+    if (ready.length === 0) throw badRequest(sessionId ? 'That WhatsApp number is not connected right now' : 'Connect a WhatsApp number by QR code first');
+    return { started: ready.map(n => s.history.start(n.id)) };
+  });
+
+  // A photo, video, voice note or document from a WhatsApp chat, fetched from the gateway.
+  app.get('/inbox/media/:id', async (request, reply) => {
+    const message = s.messages.byId(params(idParam, request).id);
+    if (!message || !message.wa_message_id || !mediaKind(message.type) || !s.sessions.owns(message.session_id) || s.sessions.isOfficial(message.session_id)) {
+      return reply.status(404).send({ error: 'This file is not available here. Open the chat on your phone to see it.' });
+    }
+    let file: { mimetype: string; data: Buffer };
+    try {
+      file = await core.openwa.getMedia(message.session_id, message.chat_id, message.wa_message_id);
+    } catch {
+      return reply.status(404).send({ error: 'This file is not available here. Open the chat on your phone to see it.' });
+    }
+    const inline = INLINE_MEDIA.test(file.mimetype);
+    const name = (message.media_name || `whatsapp-${message.type}-${message.id}`).slice(0, 200);
+    const asciiName = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\;]/g, '_');
+    return reply
+      .header('Content-Type', inline ? file.mimetype : 'application/octet-stream')
+      .header('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(name)}`)
+      .header('Content-Security-Policy', "default-src 'none'; img-src 'self'; media-src 'self'; sandbox")
+      .header('Cross-Origin-Resource-Policy', 'same-origin')
+      .header('Cache-Control', 'private, max-age=86400')
+      .send(file.data);
+  });
+
   app.get('/inbox/:id', async request => {
     const { id } = params(idParam, request);
+    const { limit } = z.object({ limit: z.coerce.number().int().min(1).max(5000).default(300) }).parse(request.query);
     const sessionId = s.messages.lastSessionFor(id);
     const contact = s.contacts.get(id);
     // Official numbers can only send free-form messages within 24 hours of the customer's last one.
@@ -405,8 +446,12 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
       sessionId && s.official.isOfficial(sessionId)
         ? { windowOpenUntil: s.official.windowOpenUntil(sessionId, contact.waChatId ?? chatIdFor(contact.phone)) }
         : null;
-    return { contact, messages: s.messages.thread(id, 300), sessionId, official };
+    const { messages, hasOlder } = s.messages.thread(id, limit);
+    // Older messages can be read from the phone for numbers linked by QR code.
+    return { contact, messages, hasOlder, canReadPhone: !!sessionId && !official, sessionId, official };
   });
+
+  app.post('/inbox/:id/earlier', async request => s.history.earlier(params(idParam, request).id));
 
   app.post('/inbox/:id/seen', async request => ({ updated: s.messages.markSeen(params(idParam, request).id) }));
 
@@ -451,6 +496,10 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
     // Sending limits are part of the plan the platform admin sells; a business can't raise its own.
     const body = { ...((request.body as Record<string, unknown> | null) ?? {}) };
     if (request.auth?.user?.role !== 'platform_admin') delete body.sending;
-    return s.settings.update(body);
+    const before = s.settings.get();
+    const next = s.settings.update(body);
+    // Turning the Indian/International tags on (or changing the business's country) tags everyone.
+    if (next.countryTags && (!before.countryTags || before.defaultCountry !== next.defaultCountry)) s.contacts.retagCountries();
+    return next;
   });
 }

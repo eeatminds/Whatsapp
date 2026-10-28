@@ -25,8 +25,9 @@ export class TagsService {
 
   list(): Tag[] {
     return this.core.db.all<Tag>(
-      `SELECT t.id, t.name, t.color, COUNT(ct.contact_id) AS count
-         FROM tags t LEFT JOIN contact_tags ct ON ct.tag_id = t.id
+      // Counts saved contacts only, as Contacts shows them (people only in the Inbox are not counted).
+      `SELECT t.id, t.name, t.color, COUNT(c.id) AS count
+         FROM tags t LEFT JOIN contact_tags ct ON ct.tag_id = t.id LEFT JOIN contacts c ON c.id = ct.contact_id AND c.saved = 1
         GROUP BY t.id ORDER BY t.name COLLATE NOCASE`,
     );
   }

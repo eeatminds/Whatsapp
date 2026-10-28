@@ -23,6 +23,8 @@ export const settingsSchema = z.object({
    * WhatsApp account also receives personal chats, and those must not flow into the contact list.
    */
   saveUnknownSenders: z.boolean(),
+  /** Tag every number "Indian" (or the business's own country) or "International". */
+  countryTags: z.boolean(),
   quietHours: z.object({ enabled: z.boolean(), start: hhmm, end: hhmm }),
   sending: z.object({
     /** Hard ceiling per WhatsApp number, across every campaign and sequence sharing it. */
@@ -57,6 +59,7 @@ export function defaultSettings(env: NodeJS.ProcessEnv = process.env): Settings 
     defaultCountry: country,
     defaultSessionId: null,
     saveUnknownSenders: false,
+    countryTags: true,
     quietHours: { enabled: true, start: '21:00', end: '09:00' },
     sending: {
       sessionMaxPerMinute: 10,

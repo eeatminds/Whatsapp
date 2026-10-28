@@ -8,6 +8,7 @@ import type { SessionsService } from './sessions.js';
 import type { Campaign, CampaignsService, RecipientRow } from './campaigns.js';
 import type { SequencesService, EnrollmentRow } from './sequences.js';
 import type { MessagesService } from './messages.js';
+import type { HistoryService } from './history.js';
 import type { OutboxService, OutboxRow } from './outbox.js';
 import type { ContactsService, ContactRow } from './contacts.js';
 import type { Sender, SentMessage } from './sender.js';
@@ -26,6 +27,8 @@ export interface DispatcherDeps {
   sender: Sender;
   inbound: InboundService;
   autoReplies: AutoRepliesService;
+  /** Copies each newly linked phone's chats into the Inbox. */
+  history?: HistoryService;
 }
 
 type SendOutcome = 'sent' | 'failed' | 'skipped' | 'transient' | 'empty';
@@ -118,6 +121,7 @@ export class Dispatcher {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     await this.ticking?.catch(() => undefined);
+    await this.deps.history?.idle();
   }
 
   tick(): Promise<void> {
@@ -153,6 +157,7 @@ export class Dispatcher {
     if (!this.deps.settings.get().defaultSessionId && ready.length > 0) {
       this.deps.settings.update({ defaultSessionId: ready[0] });
     }
+    for (const sessionId of ready) this.deps.history?.autoSync(sessionId);
     const reachable = this.deps.sessions.gatewayStatus().reachable;
     for (const sessionId of this.deps.campaigns.runningSessionIds()) {
       if (!ready.includes(sessionId)) {

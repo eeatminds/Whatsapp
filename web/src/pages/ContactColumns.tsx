@@ -3,6 +3,7 @@ import { api, post, useApi, errorMessage, type Contact } from '../api';
 import { Button, ConsentBadge, ErrorNote, Loading, Modal, TagChip, WaBadge, useConfirm, useToast } from '../components/ui';
 import { formatDateTime, formatNumber, relativeTime } from '../format';
 import { StagePill } from './Leads';
+import { countryName, flag } from '../country';
 
 /** "course_interested" → "Course interested". */
 export function fieldLabel(key: string): string {
@@ -21,6 +22,7 @@ const STANDARD: Array<{ id: string; label: string }> = [
   { id: 'tags', label: 'Tags' },
   { id: 'consent', label: 'Consent' },
   { id: 'whatsapp', label: 'WhatsApp' },
+  { id: 'country', label: 'Country' },
   { id: 'last_in', label: 'Last message in' },
   { id: 'added', label: 'Added to WA Reach' },
 ];
@@ -98,6 +100,14 @@ export function columnCell(id: string, c: Contact): ReactNode {
       return <ConsentBadge consent={c.consent} />;
     case 'whatsapp':
       return <WaBadge status={c.waStatus} pending={c.waCheckPending} />;
+    case 'country':
+      return c.country ? (
+        <span className="nowrap" title={countryName(c.country)}>
+          {flag(c.country)} {countryName(c.country)}
+        </span>
+      ) : (
+        <span className="muted">–</span>
+      );
     case 'last_in':
       return c.lastInboundAt ? relativeTime(c.lastInboundAt) : '–';
     case 'added':

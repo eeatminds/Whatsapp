@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { post, useApi, type Media, type Template } from '../api';
 import { Button, Modal } from './ui';
 import { AttachedMedia, MediaPicker } from './media';
-import { IconFile, IconPaperclip, IconTemplate } from './icons';
+import { IconDownload, IconFile, IconPaperclip, IconTemplate } from './icons';
 
 /** Render WhatsApp's lightweight markup (*bold* _italic_ ~strike~ ```mono```) as React nodes. */
 export function WhatsAppText({ text }: { text: string }) {
@@ -30,9 +30,45 @@ function useMedia(mediaId: number | null | undefined): Media | undefined {
   return data?.find(m => m.id === mediaId);
 }
 
-export function Bubble({ text, mediaId, direction = 'out', time, label, status }: {
+/** A file from a WhatsApp chat (photo, video, voice note, document), loaded from the Inbox. */
+export interface ChatFile {
+  url: string;
+  kind: 'image' | 'video' | 'audio' | 'document';
+  name: string | null;
+}
+
+const FILE_LABEL: Record<ChatFile['kind'], string> = { image: 'Photo', video: 'Video', audio: 'Audio', document: 'Document' };
+
+function ChatFileView({ file }: { file: ChatFile }) {
+  const [failed, setFailed] = useState(false);
+  const label = file.kind === 'document' ? file.name || FILE_LABEL.document : FILE_LABEL[file.kind];
+  if (failed) {
+    return (
+      <div className="doc" title="Older files stay on your phone">
+        <IconFile size={18} /> {label}: open WhatsApp on your phone to see it
+      </div>
+    );
+  }
+  if (file.kind === 'image') {
+    return (
+      <a href={file.url} target="_blank" rel="noopener noreferrer">
+        <img className="media" src={file.url} alt={label} loading="lazy" onError={() => setFailed(true)} />
+      </a>
+    );
+  }
+  if (file.kind === 'video') return <video className="media" src={file.url} controls preload="metadata" onError={() => setFailed(true)} />;
+  if (file.kind === 'audio') return <audio className="audio" src={file.url} controls preload="metadata" onError={() => setFailed(true)} />;
+  return (
+    <a className="doc" href={file.url} target="_blank" rel="noopener noreferrer">
+      <IconDownload size={18} /> {label}
+    </a>
+  );
+}
+
+export function Bubble({ text, mediaId, file, direction = 'out', time, label, status }: {
   text: string;
   mediaId?: number | null;
+  file?: ChatFile | null;
   direction?: 'in' | 'out';
   time?: string;
   label?: string;
@@ -48,6 +84,7 @@ export function Bubble({ text, mediaId, direction = 'out', time, label, status }
           <IconFile size={18} /> {media.filename}
         </div>
       )}
+      {file && <ChatFileView file={file} />}
       {text && <WhatsAppText text={text} />}
       <span className="meta">
         {time}

@@ -71,3 +71,24 @@ export function formatPhone(phone: string): string {
   const parsed = parsePhoneNumberFromString(`+${phone}`);
   return parsed ? parsed.formatInternational() : `+${phone}`;
 }
+
+/** The country (ISO code) of an E.164 number, or null when it can't be told. */
+export function countryOfPhone(phone: string): string | null {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 6) return null;
+  const parsed = parsePhoneNumberFromString(`+${digits}`);
+  if (!parsed) return null;
+  if (parsed.country) return parsed.country;
+  // A number in a range the metadata can't place still belongs to its calling code's countries.
+  const possible = parsed.getPossibleCountries();
+  return possible.length === 1 ? possible[0] : null;
+}
+
+/** "India", "United Arab Emirates": a country's English name. */
+export function countryName(code: string): string {
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'region' }).of(code.toUpperCase()) ?? code.toUpperCase();
+  } catch {
+    return code.toUpperCase();
+  }
+}

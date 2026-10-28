@@ -11,6 +11,8 @@ interface SheetState {
   sheets: Array<{ name: string; id: number; values: Cell[][] }>;
   props: Record<string, string>;
   calls: Array<Record<string, unknown>>;
+  entry?: 'setup' | 'sendNewLeads';
+  triggers?: Array<{ handler: string; everyMinutes?: number }>;
 }
 
 let env: TestEnv;
@@ -84,10 +86,17 @@ describe('Google Sheet script', () => {
     const enrolled = () => env.core.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM sequence_enrollments')!.n;
     await env.api('PUT', `/api/lead-sources/${source.id}/fields`, { fieldMap: { text_870: 'name' } });
 
-    // Run 1: the script reports the tabs; rows already in them are marked, nothing is sent.
-    save(state);
+    // Run 1 (the business clicks Run on "setup"): the every-minute check is switched on, the script
+    // reports the tabs, and rows already in them are marked; nothing is sent.
+    save({ ...state, entry: 'setup' });
     let s = await run();
+    expect(s.triggers).toEqual([{ handler: 'sendNewLeads', everyMinutes: 1 }]);
     expect(s.calls).toEqual([{ _wa_reach: 'sync', tabs: ['Home Above Footer Form', 'Pop Up Form', 'Subscribe To Newsletter'] }]);
+    // Running setup again doesn't add a second trigger.
+    save({ ...s, calls: [] });
+    s = await run();
+    expect(s.triggers).toHaveLength(1);
+    s = { ...s, entry: 'sendNewLeads', calls: [{ _wa_reach: 'sync', tabs: ['Home Above Footer Form', 'Pop Up Form', 'Subscribe To Newsletter'] }] };
     expect(statusOf(s, 'Home Above Footer Form', 1)).toBe('Sent to WA Reach');
     expect(statusOf(s, 'Home Above Footer Form', 2)).toBe('Not sent: was in the sheet before WA Reach');
     expect(statusOf(s, 'Pop Up Form', 1)).toBe('Not sent: was in the sheet before WA Reach');
@@ -96,9 +105,9 @@ describe('Google Sheet script', () => {
     expect(detail.source.sheet).toMatchObject({ mode: 'all', existing: 'skip', tabs: ['Home Above Footer Form', 'Pop Up Form', 'Subscribe To Newsletter'] });
     expect(detail.events).toEqual([]);
 
-    // The business reads only two tabs.
+    // The business unticks the newsletter tab (new tabs would still be read).
     expect((await env.api('PUT', `/api/lead-sources/${source.id}/sheet`, { mode: 'only', selected: [], existing: 'skip' })).status).toBe(400);
-    await env.api('PUT', `/api/lead-sources/${source.id}/sheet`, { mode: 'only', selected: ['Home Above Footer Form', 'Pop Up Form'], existing: 'skip' });
+    await env.api('PUT', `/api/lead-sources/${source.id}/sheet`, { mode: 'except', excluded: ['Subscribe To Newsletter'], existing: 'skip' });
 
     // Run 2: new rows in the chosen tabs are sent once, with their tab; the newsletter tab is left alone.
     s.sheets[0].values.push(row('2026-10-28', 'Anita', '9273100011', '411001'));
@@ -119,7 +128,11 @@ describe('Google Sheet script', () => {
     ]);
     expect(enrolled()).toBe(2);
 
-    // Run 3: bring in the rows that were already there, quietly (no welcome, no owner ping).
+    const counts = (await env.api('GET', `/api/lead-sources/${source.id}`)).body.source.sheet.leadsByTab;
+    expect(counts).toEqual({ 'Home Above Footer Form': 1, 'Pop Up Form': 1 });
+
+    // Run 3: bring in the rows that were already there, quietly (no welcome, no owner ping). Only
+    // ticked tabs: new tabs are no longer read automatically.
     await env.api('PUT', `/api/lead-sources/${source.id}/sheet`, { mode: 'only', selected: ['Home Above Footer Form', 'Pop Up Form'], existing: 'import' });
     const outboxBefore = env.core.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM outbox')!.n;
     s.calls = [];

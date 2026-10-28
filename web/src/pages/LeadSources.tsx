@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { del, patch, post, put, useApi, errorMessage, type Sequence } from '../api';
 import { Badge, Button, Callout, Card, Empty, ErrorNote, Field, Loading, Modal, Segmented, Toggle, useConfirm, useToast } from '../components/ui';
-import { IconPlus } from '../components/icons';
+import { IconCheck, IconCopy, IconPlus } from '../components/icons';
 import { TagPicker } from '../components/pickers';
 import { CopyField } from '../components/official';
 import { formatDateTime, formatPhone, relativeTime } from '../format';
@@ -19,7 +19,15 @@ interface LeadSource {
   url: string | null;
   fieldMap: Record<string, FieldTarget>;
   fieldsSeen: Array<{ key: string; as: FieldTarget }>;
-  sheet: { mode: 'all' | 'only'; selected: string[]; existing: 'skip' | 'import'; tabs: string[]; syncedAt: string | null };
+  sheet: {
+    mode: 'all' | 'except' | 'only';
+    selected: string[];
+    excluded: string[];
+    existing: 'skip' | 'import';
+    tabs: string[];
+    syncedAt: string | null;
+    leadsByTab: Record<string, number>;
+  };
   received: number;
   failed: number;
   lastReceivedAt: string | null;
@@ -201,59 +209,165 @@ function ColumnsEditor({ source, info, onSaved }: { source: LeadSource; info?: C
   );
 }
 
-function SheetTabs({ source, onSaved }: { source: LeadSource; onSaved: () => void }) {
-  const toast = useToast();
-  const [mode, setMode] = useState(source.sheet.mode);
-  const [selected, setSelected] = useState<string[]>(source.sheet.selected);
-  const [existing, setExisting] = useState(source.sheet.existing);
-  const [busy, setBusy] = useState(false);
-  const tabs = [...source.sheet.tabs, ...selected.filter(t => !source.sheet.tabs.includes(t))];
-  const dirty = mode !== source.sheet.mode || existing !== source.sheet.existing || JSON.stringify([...selected].sort()) !== JSON.stringify([...source.sheet.selected].sort());
+/** Copy the Google Sheet script, with a confirmation. */
+function CopyScript({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Button
+      size="sm"
+      variant="primary"
+      icon={<IconCopy size={14} />}
+      onClick={() => {
+        void navigator.clipboard?.writeText(sheetScript(url));
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }}
+    >
+      {copied ? 'Copied' : 'Copy script'}
+    </Button>
+  );
+}
+
+/** Steps to put the script in the sheet; tabs show up as soon as the business clicks Run. */
+function ConnectSheet({ source }: { source: LeadSource }) {
   return (
     <div className="stack">
-      {source.sheet.syncedAt ? (
-        <p className="small muted" style={{ margin: 0 }}>
-          Your sheet last checked in {relativeTime(source.sheet.syncedAt)}. Changes here apply within a minute; no need to change the script.
-        </p>
-      ) : (
-        <Callout tone="warn">
-          {source.lastReceivedAt
-            ? 'Your sheet uses the older script, which reads only the first tab. '
-            : 'Your sheet has not checked in yet. '}
-          Paste the latest script (see <strong>How to connect Google Sheet</strong>) and its tabs show here within a minute.
-        </Callout>
-      )}
-      <div className="stack tight">
-        <span className="label">Which tabs to read</span>
-        <label className="row" style={{ gap: 8 }}>
-          <input type="radio" name="sheet-mode" checked={mode === 'all'} onChange={() => setMode('all')} />
-          All tabs, including tabs you add later
-        </label>
-        <label className="row" style={{ gap: 8 }}>
-          <input type="radio" name="sheet-mode" checked={mode === 'only'} onChange={() => setMode('only')} />
-          Only the tabs I tick
-        </label>
-        {tabs.length > 0 && (
-          <div className="sheet-tabs">
-            {tabs.map(t => (
-              <label key={t} className="row" style={{ gap: 8, opacity: mode === 'all' ? 0.7 : 1 }}>
-                <input
-                  type="checkbox"
-                  disabled={mode === 'all'}
-                  checked={mode === 'all' || selected.includes(t)}
-                  onChange={e => setSelected(e.target.checked ? [...selected, t] : selected.filter(x => x !== t))}
-                />
-                {t}
-                {!source.sheet.tabs.includes(t) && <span className="small muted">(not in the sheet any more)</span>}
-              </label>
-            ))}
+      <Callout tone={source.lastReceivedAt ? 'warn' : undefined}>
+        {source.lastReceivedAt
+          ? 'Your sheet is using the older script, which only reads its first tab. Replace it with the new one to choose tabs (takes a minute; rows already sent are not sent again):'
+          : 'Connect your sheet to choose which tabs come into WA Reach (takes a minute):'}
+      </Callout>
+      <ol className="setup-steps">
+        <li>
+          <div className="row wrap" style={{ gap: 8 }}>
+            <span>Copy the script:</span>
+            {source.url && <CopyScript url={source.url} />}
           </div>
-        )}
+        </li>
+        <li>
+          In your Google Sheet click <strong>Extensions → Apps Script</strong>. Delete everything there, paste, and click <strong>Save</strong> (the disk icon).
+        </li>
+        <li>
+          Click <strong>Run</strong> (with <code>setup</code> chosen next to it) and allow access when Google asks.
+        </li>
+      </ol>
+      <div className="row small secondary" style={{ gap: 8 }}>
+        <span className="spinner" style={{ width: 14, height: 14 }} /> Waiting for your sheet: its tabs appear here as soon as you click Run.
+      </div>
+    </div>
+  );
+}
+
+interface TabChoice {
+  /** Read tabs added to the sheet later too. */
+  autoNew: boolean;
+  /** With autoNew: the unticked tabs. */
+  excluded: string[];
+  /** Without autoNew: the ticked tabs. */
+  selected: string[];
+  existing: 'skip' | 'import';
+}
+
+function choiceOf(sheet: LeadSource['sheet']): TabChoice {
+  if (sheet.mode === 'only') return { autoNew: false, selected: sheet.selected, excluded: [], existing: sheet.existing };
+  return { autoNew: true, selected: [], excluded: sheet.mode === 'except' ? sheet.excluded : [], existing: sheet.existing };
+}
+
+function SheetTabs({ source }: { source: LeadSource }) {
+  const toast = useToast();
+  const [choice, setChoice] = useState<TabChoice>(() => choiceOf(source.sheet));
+  const [state, setState] = useState<'idle' | 'saving' | 'saved'>('idle');
+  const first = useRef(true);
+  const valid = choice.autoNew || choice.selected.length > 0;
+
+  // Every change is saved straight away; the sheet picks it up within a minute.
+  useEffect(() => {
+    if (first.current) {
+      first.current = false;
+      return;
+    }
+    if (!valid) return;
+    setState('saving');
+    const timer = setTimeout(() => {
+      const body = choice.autoNew
+        ? { mode: choice.excluded.length ? 'except' : 'all', excluded: choice.excluded, selected: [], existing: choice.existing }
+        : { mode: 'only', selected: choice.selected, excluded: [], existing: choice.existing };
+      put(`/api/lead-sources/${source.id}/sheet`, body)
+        .then(() => setState('saved'))
+        .catch(err => {
+          setState('idle');
+          toast.error(errorMessage(err));
+        });
+    }, 400);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [choice]);
+
+  if (!source.sheet.syncedAt) return <ConnectSheet source={source} />;
+
+  const remembered = choice.autoNew ? choice.excluded : choice.selected;
+  const tabs = [...source.sheet.tabs, ...remembered.filter(t => !source.sheet.tabs.includes(t))];
+  const isOn = (tab: string) => (choice.autoNew ? !choice.excluded.includes(tab) : choice.selected.includes(tab));
+  const toggle = (tab: string, on: boolean) =>
+    setChoice(c =>
+      c.autoNew
+        ? { ...c, excluded: on ? c.excluded.filter(t => t !== tab) : [...c.excluded, tab] }
+        : { ...c, selected: on ? [...c.selected, tab] : c.selected.filter(t => t !== tab) },
+    );
+  const setAll = (on: boolean) => setChoice(c => (c.autoNew ? { ...c, excluded: on ? [] : [...source.sheet.tabs] } : { ...c, selected: on ? [...source.sheet.tabs] : [] }));
+  const setAutoNew = (autoNew: boolean) =>
+    setChoice(c =>
+      autoNew
+        ? { ...c, autoNew, excluded: source.sheet.tabs.filter(t => !c.selected.includes(t)), selected: [] }
+        : { ...c, autoNew, selected: source.sheet.tabs.filter(t => !c.excluded.includes(t)), excluded: [] },
+    );
+  const reading = source.sheet.tabs.filter(isOn).length;
+
+  return (
+    <div className="stack">
+      <div className="row between wrap" style={{ gap: 8 }}>
+        <span className="small secondary">
+          <IconCheck size={14} style={{ color: 'var(--brand)', verticalAlign: '-2px' }} /> Connected: your sheet checked in {relativeTime(source.sheet.syncedAt)}.
+        </span>
+        <span className="small muted" aria-live="polite">
+          {state === 'saving' ? 'Saving…' : state === 'saved' ? 'Saved. Your sheet picks this up within a minute.' : ''}
+        </span>
+      </div>
+      <div className="stack tight">
+        <div className="row between wrap">
+          <span className="label">Tick the tabs to bring into WA Reach ({reading} of {source.sheet.tabs.length})</span>
+          <div className="row" style={{ gap: 4 }}>
+            <Button size="sm" variant="ghost" onClick={() => setAll(true)}>
+              Tick all
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setAll(false)}>
+              Untick all
+            </Button>
+          </div>
+        </div>
+        <div className="sheet-tab-list">
+          {tabs.map(t => {
+            const gone = !source.sheet.tabs.includes(t);
+            const leads = source.sheet.leadsByTab[t] ?? 0;
+            return (
+              <label key={t} className={`sheet-tab ${isOn(t) ? 'on' : ''}`}>
+                <input type="checkbox" checked={isOn(t)} onChange={e => toggle(t, e.target.checked)} />
+                <span className="name">{t}</span>
+                <span className="small muted nowrap">{gone ? 'not in the sheet any more' : leads ? `${leads} lead${leads === 1 ? '' : 's'}` : isOn(t) ? 'read' : 'not read'}</span>
+              </label>
+            );
+          })}
+        </div>
+        <label className="row" style={{ gap: 8, marginTop: 4 }}>
+          <input type="checkbox" checked={choice.autoNew} onChange={e => setAutoNew(e.target.checked)} />
+          <span>Also bring in tabs I add to the sheet later</span>
+        </label>
+        {!valid && <span className="small error-text">Tick at least one tab, or turn on “Also bring in tabs I add later”.</span>}
       </div>
       <div className="stack tight">
         <span className="label">Rows that were already in a tab when WA Reach first reads it</span>
         <label className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
-          <input type="radio" name="sheet-existing" checked={existing === 'skip'} onChange={() => setExisting('skip')} />
+          <input type="radio" name="sheet-existing" checked={choice.existing === 'skip'} onChange={() => setChoice(c => ({ ...c, existing: 'skip' }))} />
           <span>
             Leave them alone <span className="muted">(recommended)</span>
             <br />
@@ -261,7 +375,7 @@ function SheetTabs({ source, onSaved }: { source: LeadSource; onSaved: () => voi
           </span>
         </label>
         <label className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
-          <input type="radio" name="sheet-existing" checked={existing === 'import'} onChange={() => setExisting('import')} />
+          <input type="radio" name="sheet-existing" checked={choice.existing === 'import'} onChange={() => setChoice(c => ({ ...c, existing: 'import' }))} />
           <span>
             Add them as contacts too, without sending them any message
             <br />
@@ -269,29 +383,7 @@ function SheetTabs({ source, onSaved }: { source: LeadSource; onSaved: () => voi
           </span>
         </label>
       </div>
-      <div className="row wrap">
-        <Button
-          variant="primary"
-          loading={busy}
-          disabled={!dirty || (mode === 'only' && selected.length === 0)}
-          onClick={async () => {
-            setBusy(true);
-            try {
-              await put(`/api/lead-sources/${source.id}/sheet`, { mode, selected, existing });
-              toast.success('Saved. Your sheet picks this up within a minute.');
-              onSaved();
-            } catch (err) {
-              toast.error(errorMessage(err));
-            } finally {
-              setBusy(false);
-            }
-          }}
-        >
-          Save tabs
-        </Button>
-        {mode === 'only' && selected.length === 0 && <span className="small muted">Tick at least one tab.</span>}
-      </div>
-      <p className="hint">Each lead gets a “Sheet tab” custom field, so you can filter Contacts by the form it came from.</p>
+      <p className="hint">Each lead gets a “Sheet tab” custom field, so you can filter Contacts by the tab it came from.</p>
     </div>
   );
 }
@@ -354,15 +446,15 @@ function SetupSteps({ source }: { source: LeadSource }) {
             too).
           </li>
           <li>
-            Click <strong>Extensions → Apps Script</strong>, delete everything there, paste the code below and click <strong>Save</strong> (the disk icon).
+            Click <strong>Extensions → Apps Script</strong>, delete everything there, paste the code below (or use <strong>Copy</strong>) and click <strong>Save</strong>{' '}
+            (the disk icon).
           </li>
           <li>
-            Click the clock icon (<strong>Triggers</strong>) → <strong>Add Trigger</strong> → function <code>sendNewLeads</code>, event source <strong>Time-driven</strong>,{' '}
-            <strong>Minutes timer</strong>, <strong>Every minute</strong> → Save. Allow access when Google asks.
+            Click <strong>Run</strong> (with <code>setup</code> chosen next to it) and allow access when Google asks. This checks the sheet every minute from now on.
           </li>
           <li>
-            Within a minute your tabs appear under <strong>Sheet tabs</strong> here: choose which tabs to read. Rows already in a tab are marked “Not sent” and nobody is
-            messaged, unless you choose to add them quietly.
+            Your tabs appear under <strong>Sheet tabs</strong> here straight away: untick any tab you don't want. Rows already in a tab are marked “Not sent” and nobody
+            is messaged, unless you choose to add them quietly.
           </li>
           <li>Add a test row with your own number. Within a minute its <strong>WA Status</strong> shows “Sent to WA Reach” and the lead appears below.</li>
           <li>Open <strong>Columns</strong> here to check the name, email and your other columns came through as you expect.</li>
@@ -587,13 +679,15 @@ function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: numb
             onChange={setView}
             options={[
               { value: 'setup', label: `How to connect ${KIND_LABEL[source.kind]}` },
-              ...(source.kind === 'google_sheet' ? [{ value: 'tabs' as const, label: `Sheet tabs (${source.sheet.tabs.length})` }] : []),
+              ...(source.kind === 'google_sheet'
+                ? [{ value: 'tabs' as const, label: source.sheet.syncedAt ? `Sheet tabs (${source.sheet.tabs.length})` : 'Choose sheet tabs' }]
+                : []),
               { value: 'columns', label: `Columns (${source.fieldsSeen.length})` },
               { value: 'leads', label: `Recent leads (${data.events.length})` },
             ]}
           />
           {view === 'setup' && source.url && <SetupSteps source={source} />}
-          {view === 'tabs' && <SheetTabs key={JSON.stringify(source.sheet)} source={source} onSaved={() => void reload()} />}
+          {view === 'tabs' && <SheetTabs key={source.id} source={source} />}
           {view === 'columns' && (
             <ColumnsEditor
               key={JSON.stringify([source.fieldMap, data.columns.savedAs, source.fieldsSeen.length])}

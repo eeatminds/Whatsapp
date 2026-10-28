@@ -6,7 +6,8 @@ import type { OfficialInfo, OfficialNumbersService } from './official.js';
 /** A sending number: linked by QR code through OpenWA, or connected through Meta's official Cloud API. */
 export type NumberSession = OpenWASession & { channel: 'qr' | 'official'; official?: OfficialInfo };
 
-export const WEBHOOK_EVENTS = ['message.received', 'message.ack', 'message.failed', 'session.status'];
+// message.sent: messages typed on the phone itself, so the Inbox is a full copy of each chat.
+export const WEBHOOK_EVENTS = ['message.received', 'message.sent', 'message.ack', 'message.failed', 'session.status'];
 
 const REFRESH_MS = 10_000;
 
