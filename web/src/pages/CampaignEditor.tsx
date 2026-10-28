@@ -19,7 +19,8 @@ import { Button, Callout, Card, ErrorNote, Field, Loading, NumberInput, PageHead
 import { IconArrowLeft, IconPlus, IconSend, IconX } from '../components/icons';
 import { Composer, MessagePreview } from '../components/composer';
 import { SessionSelect, TagPicker, useSessions, useTags } from '../components/pickers';
-import { TemplatePicker, templatePreviewText, useTemplate } from '../components/official';
+import { TemplatePicker, useTemplate, withSampleContact } from '../components/official';
+import { TemplatePreview, previewOfTemplate } from '../components/meta-templates';
 import { AUDIENCE_HANDOFF } from './Contacts';
 import { formatDuration, formatNumber, fromLocalInput, toLocalInput } from '../format';
 
@@ -406,7 +407,7 @@ export function CampaignEditorPage() {
               <div className="divider" />
               {official ? (
                 <p className="hint">
-                  Unsubscribe line and link tracking don't apply to templates: add a “Stop promotions” button to the template in Meta, and customers who tap it are opted out automatically.
+                  The unsubscribe line and link tracking don't apply to templates: give the template a “Stop promotions” button (customers who tap it are opted out automatically) and a “Count taps” website button when you create it under Templates.
                 </p>
               ) : (
                 <>
@@ -434,7 +435,9 @@ export function CampaignEditorPage() {
           <Card title={variants.length > 1 ? `Preview: version ${variant.key}` : 'Preview'}>
             {official ? (
               previewTemplate && variant.template ? (
-                <MessagePreview body={templatePreviewText(previewTemplate, variant.template.params)} mediaId={variant.template.headerMediaId} footer={null} />
+                <TemplatePreview
+                  model={previewOfTemplate(previewTemplate, withSampleContact(variant.template.params), { header: variant.template.headerMediaId, cards: variant.template.cardMediaIds })}
+                />
               ) : (
                 <p className="secondary small">Choose a template to see a preview.</p>
               )

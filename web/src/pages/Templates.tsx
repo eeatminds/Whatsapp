@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { del, patch, post, useApi, errorMessage, type Template } from '../api';
-import { Button, Callout, Card, Empty, ErrorNote, Field, Loading, Modal, PageHeader, useConfirm, useToast } from '../components/ui';
+import { Button, Callout, Card, Empty, ErrorNote, Field, Loading, Modal, PageHeader, Segmented, useConfirm, useToast } from '../components/ui';
+import { MetaTemplatesTab } from './MetaTemplates';
 import { IconPlus } from '../components/icons';
 import { Composer, MessagePreview, WhatsAppText } from '../components/composer';
 import { relativeTime } from '../format';
@@ -52,21 +54,45 @@ function TemplateEditor({ template, onClose, onSaved }: { template: Template | n
 }
 
 export function TemplatesPage() {
+  const [params, setParams] = useSearchParams();
+  const tab = params.get('tab') === 'meta' ? 'meta' : 'saved';
+  return (
+    <div className="page" style={tab === 'meta' ? { maxWidth: 1280 } : undefined}>
+      <PageHeader
+        title="Templates"
+        description={
+          tab === 'meta'
+            ? 'Meta-approved templates for your official WhatsApp numbers: create them here, send them for approval and follow their status.'
+            : 'Reusable messages with personalization and media. Load them into any campaign, drip step or reply.'
+        }
+      />
+      <div style={{ marginBottom: 16 }}>
+        <Segmented
+          value={tab}
+          onChange={value => setParams(value === 'meta' ? { tab: 'meta' } : {})}
+          options={[
+            { value: 'saved', label: 'Saved messages' },
+            { value: 'meta', label: 'Meta templates (official numbers)' },
+          ]}
+        />
+      </div>
+      {tab === 'meta' ? <MetaTemplatesTab /> : <SavedMessages />}
+    </div>
+  );
+}
+
+function SavedMessages() {
   const { data, error, loading, reload } = useApi<Template[]>('/api/templates');
   const [editing, setEditing] = useState<Template | 'new' | null>(null);
   const toast = useToast();
   const { confirm, dialog } = useConfirm();
   return (
-    <div className="page">
-      <PageHeader
-        title="Templates"
-        description="Reusable messages with personalization and media. Load them into any campaign, drip step or reply."
-        actions={
-          <Button variant="primary" icon={<IconPlus size={16} />} onClick={() => setEditing('new')}>
-            New template
-          </Button>
-        }
-      />
+    <div>
+      <div className="row" style={{ justifyContent: 'flex-end', marginBottom: 12 }}>
+        <Button variant="primary" icon={<IconPlus size={16} />} onClick={() => setEditing('new')}>
+          New template
+        </Button>
+      </div>
       <ErrorNote error={error} />
       {data?.some(t => t.body.includes('[')) && (
         <Callout tone="success">

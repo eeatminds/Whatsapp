@@ -190,6 +190,10 @@ export interface OfficialTemplate extends TemplateShape {
   madeHere: boolean;
   canEdit: boolean;
   updatedAt: string | null;
+  /** Example value of each blank (slot key → text), for previews. */
+  examples: Record<string, string>;
+  /** Example image or video of the header and of each card, when made in WA Reach. */
+  exampleMedia: { header: number | null; cards: Array<number | null> } | null;
 }
 
 function digitsOnly(phone: string | null | undefined): string | null {
@@ -710,8 +714,27 @@ export class OfficialNumbersService {
         slot.suggested = suggestedValue(name);
       }
     }
+    const components = parseJson<MetaTemplateComponent[]>(row.components, []);
+    const parsed = row.draft ? draftSchema.safeParse(parseJson(row.draft, {})) : null;
+    const draft = parsed?.success ? parsed.data : null;
+    const examples: Record<string, string> = {};
+    if (draft) {
+      for (const [key, name] of Object.entries(labels)) examples[key] = draft.samples[name] ?? '';
+    } else {
+      // Templates made elsewhere carry Meta's own examples.
+      const example = (c: MetaTemplateComponent | undefined, key: string) => (c?.example as Record<string, unknown> | undefined)?.[key];
+      const list = (value: unknown): unknown[] => (Array.isArray(value) ? (Array.isArray(value[0]) ? (value[0] as unknown[]) : value) : []);
+      const find = (parts: MetaTemplateComponent[], type: string) => parts.find(c => c.type?.toUpperCase() === type);
+      list(example(find(components, 'HEADER'), 'header_text')).forEach((v, i) => typeof v === 'string' && (examples[`header:${i + 1}`] = v));
+      list(example(find(components, 'BODY'), 'body_text')).forEach((v, i) => typeof v === 'string' && (examples[`body:${i + 1}`] = v));
+      (find(components, 'CAROUSEL')?.cards ?? []).forEach((card, c) =>
+        list(example(find(card.components ?? [], 'BODY'), 'body_text')).forEach((v, i) => typeof v === 'string' && (examples[`card:${c}:body:${i + 1}`] = v)),
+      );
+    }
     return {
       id: row.id,
+      examples,
+      exampleMedia: draft ? { header: draft.header.mediaId, cards: draft.cards.map(c => c.mediaId) } : null,
       name: row.name,
       language: row.language,
       status: row.status,

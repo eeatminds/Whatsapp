@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeOpenWA } from '../test/fake-openwa.js';
+import { FakeMeta } from '../test/fake-meta.js';
 import { loadConfig } from '../server/config.js';
 import { OpenWAClient } from '../server/openwa/client.js';
 import { Platform } from '../server/platform/platform.js';
@@ -106,8 +107,66 @@ async function main(): Promise<void> {
     ADMIN_EMAIL: 'admin@demo.local',
   });
   let offset = 0;
+  // A simulated Meta Cloud API, so the official-number screens (templates, approvals) can be tried.
+  const meta = new FakeMeta();
+  const OFFICIAL = { phoneNumberId: '1098765432101', wabaId: '2098765432101', accessToken: `EAAG${'x'.repeat(60)}`, appSecret: 'abcdef0123456789abcdef0123456789' };
+  meta.addNumber({ id: OFFICIAL.phoneNumberId, wabaId: OFFICIAL.wabaId, token: OFFICIAL.accessToken, display: '+91 98450 00999', name: 'Chai & Co.' });
+  meta.templatesByWaba.set(OFFICIAL.wabaId, [
+    {
+      id: '880001',
+      name: 'diwali_offer',
+      language: 'en',
+      status: 'APPROVED',
+      category: 'MARKETING',
+      quality_score: { score: 'GREEN' },
+      components: [
+        { type: 'BODY', text: 'Hi {{1}} 🪔 Our Diwali hampers are here! Get {{2}} off till Sunday.' },
+        { type: 'FOOTER', text: 'Not interested? Tap Stop promotions' },
+        { type: 'BUTTONS', buttons: [{ type: 'URL', text: 'Shop now', url: 'https://chaico.example/diwali' }, { type: 'QUICK_REPLY', text: 'Stop promotions' }] },
+      ],
+    },
+    {
+      id: '880002',
+      name: 'weekend_sale',
+      language: 'en',
+      status: 'REJECTED',
+      category: 'MARKETING',
+      rejected_reason: 'INVALID_FORMAT',
+      components: [{ type: 'BODY', text: '{{1}} {{2}} weekend sale is live' }],
+    },
+    {
+      id: '880004',
+      name: 'teaware_carousel',
+      language: 'en',
+      status: 'APPROVED',
+      category: 'MARKETING',
+      quality_score: { score: 'UNKNOWN' },
+      components: [
+        { type: 'BODY', text: 'Hi {{1}}, our new teaware has arrived. Swipe to see it all!', example: { body_text: [['Priya']] } },
+        {
+          type: 'CAROUSEL',
+          cards: ['₹499', '₹899'].map(price => ({
+            components: [
+              { type: 'HEADER', format: 'IMAGE' },
+              { type: 'BODY', text: 'Now only {{1}}', example: { body_text: [[price]] } },
+              { type: 'BUTTONS', buttons: [{ type: 'URL', text: 'Buy now', url: 'https://chaico.example/p/{{1}}' }] },
+            ],
+          })),
+        },
+      ],
+    },
+    {
+      id: '880003',
+      name: 'order_shipped',
+      language: 'hi',
+      status: 'PENDING',
+      category: 'UTILITY',
+      components: [{ type: 'BODY', text: 'नमस्ते {{1}}, आपका ऑर्डर {{2}} भेज दिया गया है।' }],
+    },
+  ]);
   const platform = new Platform({
     config,
+    meta,
     openwa: new OpenWAClient({ baseUrl: fake.url, apiKey: fake.apiKey }),
     clock: () => new Date(Date.now() + offset),
     log: { info: () => {}, warn: () => {}, error: console.error, debug: () => {} },
@@ -337,6 +396,23 @@ async function main(): Promise<void> {
     data: { id: 'demo_voice', from: '919900123456@c.us', body: '', type: 'voice', kind: 'individual', media: { mimetype: 'audio/wav', sizeBytes: 32_044 }, contact: { pushName: 'Kiran' } },
   });
   offset = 0;
+
+  // The official number and its templates (one draft made in WA Reach).
+  const official = await s.sessions.addOfficial({ name: 'Chai Co Official', ...OFFICIAL });
+  await s.official.syncTemplates(official.id);
+  const hamper = await s.media.upload({ filename: 'diwali-hamper.png', mimetype: 'image/png', base64: demoPhoto() });
+  await s.official.saveTemplate(official.id, {
+    draft: {
+      name: 'new_arrivals_oct',
+      language: 'en',
+      category: 'MARKETING',
+      header: { type: 'image', mediaId: hamper.id },
+      body: 'Hi {{first_name}}, our new *Kashmiri Kahwa* has arrived at the {{city}} store. Come and taste it this week!',
+      footer: 'Not interested? Tap Stop promotions',
+      buttons: [{ type: 'quick_reply', text: 'Stop promotions' }],
+      samples: { first_name: 'Priya', city: 'Pune' },
+    },
+  });
 
   // ---------------------------------------------------------------- serve
   const app = await buildApp(platform, { staticDir: join(here, '..', 'dist', 'web') });

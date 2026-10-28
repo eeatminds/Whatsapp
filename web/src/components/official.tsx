@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { get, patch, post, useApi, errorMessage, type MetaTemplate, type OfficialSetup, type Session, type SystemInfo, type TemplateChoice } from '../api';
 import { Badge, Button, Callout, ErrorNote, Field, Loading, Modal } from './ui';
 import { IconCopy } from './icons';
@@ -277,12 +278,43 @@ export function templatePreviewText(template: MetaTemplate, params: Record<strin
   const fill = (text: string | null, part: string) => (text ?? '').replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (m, name: string) => params[`${part}:${name}`]?.trim() || m);
   return [
     template.headerText ? `*${fill(template.headerText, 'header')}*` : '',
+    template.offer ? `🏷️ ${template.offer.text}` : '',
     fill(template.bodyText, 'body'),
+    ...template.cards.map((card, i) => `🖼️ ${card.bodyText ? fill(card.bodyText, `card:${i}:body`) : `Card ${i + 1}`}`),
     template.footerText ? `_${template.footerText}_` : '',
-    template.buttons.length ? template.buttons.map(b => `[${b.text}]`).join(' ') : '',
+    template.buttons.length ? template.buttons.map(b => `[${b.text || 'Copy offer code'}]`).join(' ') : '',
   ]
     .filter(Boolean)
     .join('\n\n');
+}
+
+const SAMPLE_CONTACT: Record<string, string> = { first_name: 'Priya', last_name: 'Sharma', name: 'Priya Sharma', city: 'Pune', phone: '+91 98450 12345', email: 'priya@example.com' };
+
+/** Personalization like {{first_name|there}} shown with a sample customer, for previews. */
+export function withSampleContact(params: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(params).map(([key, value]) => [
+      key,
+      value.replace(/\{\{\s*([a-z0-9_]+)\s*(?:\|([^}]*))?\}\}/gi, (_m, name: string, fallback?: string) => SAMPLE_CONTACT[name.toLowerCase()] ?? fallback?.trim() ?? `[${name}]`),
+    ]),
+  );
+}
+
+/** "https://maps.google.com/?q=18.52,73.85" or ".../@18.52,73.85,15z" → the coordinates. */
+function coordinatesFrom(text: string): { latitude: number; longitude: number } | null {
+  const match = /(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/.exec(text);
+  if (!match) return null;
+  const latitude = Number(match[1]);
+  const longitude = Number(match[2]);
+  return Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180 ? { latitude, longitude } : null;
+}
+
+/** datetime-local value for an ISO time, in the browser's time zone. */
+function localInput(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 export function OfficialTemplatesModal({ session, onClose }: { session: Session; onClose: () => void }) {
@@ -296,7 +328,10 @@ export function OfficialTemplatesModal({ session, onClose }: { session: Session;
       onClose={onClose}
       footer={
         <>
-          <Ext href={TEMPLATE_MANAGER}>Create or edit templates in WhatsApp Manager ↗</Ext>
+          <Link to={`/templates?tab=meta&number=${encodeURIComponent(session.id)}`} onClick={onClose}>
+            Create and manage templates
+          </Link>
+          <Ext href={TEMPLATE_MANAGER}>WhatsApp Manager ↗</Ext>
           <span className="spacer" />
           <Button
             loading={busy}
@@ -324,7 +359,13 @@ export function OfficialTemplatesModal({ session, onClose }: { session: Session;
       {loading && !data ? (
         <Loading />
       ) : !data?.items.length ? (
-        <Callout>No templates yet. Create one in WhatsApp Manager (category Marketing), wait for approval, then click “Sync from Meta”.</Callout>
+        <Callout>
+          No templates yet.{' '}
+          <Link to={`/templates?tab=meta&number=${encodeURIComponent(session.id)}`} onClick={onClose}>
+            Create one here
+          </Link>{' '}
+          and send it to Meta for approval, or click “Sync from Meta” for templates made in WhatsApp Manager.
+        </Callout>
       ) : (
         <div className="stack">
           {data.items.map(t => (
@@ -352,8 +393,9 @@ export function OfficialTemplatesModal({ session, onClose }: { session: Session;
 /** Pick an approved template for a campaign and fill in its variables. */
 export function TemplatePicker({ sessionId, value, onChange }: { sessionId: string; value: TemplateChoice | null | undefined; onChange: (choice: TemplateChoice | null) => void }) {
   const { data, error, loading, setData } = useApi<{ items: MetaTemplate[] }>(`/api/official/numbers/${sessionId}/templates`);
-  const [picking, setPicking] = useState(false);
+  const [picking, setPicking] = useState<'header' | number | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [place, setPlace] = useState('');
   const { data: system } = useApi<SystemInfo>('/api/system');
   const trackingPrefix = system?.publicUrl ? `${system.publicUrl}/r/` : null;
   const templates = data?.items ?? [];
@@ -364,11 +406,21 @@ export function TemplatePicker({ sessionId, value, onChange }: { sessionId: stri
     const t = templates.find(x => `${x.name}:${x.language}` === key);
     if (!t) return onChange(null);
     const params: Record<string, string> = {};
-    // Sensible starting values: the first body variable is usually the customer's name.
+    const same = value?.name === t.name;
+    // Sensible starting values: blanks named in WA Reach (first_name, city...) fill themselves;
+    // otherwise the first body variable is usually the customer's name.
     t.slots.forEach((slot, i) => {
-      params[slot.key] = value?.name === t.name ? (value.params[slot.key] ?? '') : i === 0 && slot.key.startsWith('body:') ? '{{first_name|there}}' : '';
+      params[slot.key] = same ? (value.params[slot.key] ?? '') : slot.name !== undefined ? (slot.suggested ?? '') : i === 0 && slot.key.startsWith('body:') ? '{{first_name|there}}' : '';
     });
-    onChange({ name: t.name, language: t.language, params, headerMediaId: value?.name === t.name ? value.headerMediaId : null });
+    onChange({
+      name: t.name,
+      language: t.language,
+      params,
+      headerMediaId: same ? value.headerMediaId : null,
+      cardMediaIds: same ? (value.cardMediaIds ?? []) : t.cards.map(() => null),
+      location: same ? (value.location ?? null) : null,
+      offerExpiresAt: same ? (value.offerExpiresAt ?? null) : null,
+    });
   };
 
   useEffect(() => {
@@ -378,7 +430,10 @@ export function TemplatePicker({ sessionId, value, onChange }: { sessionId: stri
   const mediaHeader = current && ['IMAGE', 'VIDEO', 'DOCUMENT'].includes(current.headerFormat);
   return (
     <div className="stack">
-      <Callout>Official numbers start conversations with a Meta-approved template. Choose one, then fill in its blanks. You can use personalization like {'{{first_name|there}}'} or {'{{city}}'}.</Callout>
+      <Callout>
+        Official numbers start conversations with a Meta-approved template. Choose one, then fill in its blanks. You can use personalization like {'{{first_name|there}}'} or{' '}
+        {'{{city}}'}. <Link to={`/templates?tab=meta&number=${encodeURIComponent(sessionId)}`}>Create a new template</Link>
+      </Callout>
       <ErrorNote error={error} />
       <Field
         label="Approved template"
@@ -424,11 +479,76 @@ export function TemplatePicker({ sessionId, value, onChange }: { sessionId: stri
                 <AttachedMedia mediaId={value.headerMediaId} onRemove={() => onChange({ ...value, headerMediaId: null })} />
               ) : (
                 <div>
-                  <Button size="sm" onClick={() => setPicking(true)}>
+                  <Button size="sm" onClick={() => setPicking('header')}>
                     Choose {current.headerFormat.toLowerCase()}
                   </Button>
                 </div>
               )}
+            </Field>
+          )}
+          {current.headerFormat === 'LOCATION' && (
+            <Field
+              label="Place to show on the map"
+              hint={
+                value.location
+                  ? `Pinned at ${value.location.latitude}, ${value.location.longitude}.`
+                  : 'Paste a Google Maps link (or “latitude, longitude”), then add the name and address customers see.'
+              }
+            >
+              <div className="stack tight">
+                <input
+                  className="input"
+                  value={place}
+                  placeholder="https://maps.google.com/?q=18.5204,73.8567"
+                  onChange={e => {
+                    setPlace(e.target.value);
+                    const point = coordinatesFrom(e.target.value);
+                    if (point) onChange({ ...value, location: { ...point, name: value.location?.name ?? '', address: value.location?.address ?? '' } });
+                  }}
+                />
+                {value.location && (
+                  <div className="grid cols-2">
+                    <input className="input" placeholder="Name, e.g. Chai & Co., FC Road" value={value.location.name ?? ''} onChange={e => onChange({ ...value, location: { ...value.location!, name: e.target.value } })} />
+                    <input className="input" placeholder="Address" value={value.location.address ?? ''} onChange={e => onChange({ ...value, location: { ...value.location!, address: e.target.value } })} />
+                  </div>
+                )}
+              </div>
+            </Field>
+          )}
+          {current.offer?.hasExpiration && (
+            <Field label="Offer ends" hint="Customers see a countdown to this time.">
+              <input
+                className="input"
+                type="datetime-local"
+                value={localInput(value.offerExpiresAt)}
+                onChange={e => onChange({ ...value, offerExpiresAt: e.target.value ? new Date(e.target.value).toISOString() : null })}
+              />
+            </Field>
+          )}
+          {current.cards.length > 0 && (
+            <Field label={`A ${current.cards[0].headerFormat === 'VIDEO' ? 'video' : 'photo'} for each card`}>
+              <div className="stack tight">
+                {current.cards.map((card, i) => {
+                  const id = value.cardMediaIds?.[i] ?? null;
+                  return (
+                    <div key={i} className="row" style={{ gap: 8 }}>
+                      <span className="small secondary" style={{ width: 54 }}>
+                        Card {i + 1}
+                      </span>
+                      {id ? (
+                        <AttachedMedia
+                          mediaId={id}
+                          onRemove={() => onChange({ ...value, cardMediaIds: current.cards.map((_c, j) => (j === i ? null : (value.cardMediaIds?.[j] ?? null))) })}
+                        />
+                      ) : (
+                        <Button size="sm" onClick={() => setPicking(i)}>
+                          Choose {card.headerFormat === 'VIDEO' ? 'video' : 'photo'}
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </Field>
           )}
           {current.slots.map(slot => (
@@ -449,13 +569,14 @@ export function TemplatePicker({ sessionId, value, onChange }: { sessionId: stri
           <code>{trackingPrefix}{'{{1}}'}</code>, then sync. You then enter the real destination here and every tap shows in the report.
         </p>
       )}
-      {picking && value && (
+      {picking !== null && value && (
         <MediaPicker
-          selectedId={value.headerMediaId}
-          onClose={() => setPicking(false)}
+          selectedId={picking === 'header' ? value.headerMediaId : (value.cardMediaIds?.[picking] ?? null)}
+          onClose={() => setPicking(null)}
           onPick={media => {
-            onChange({ ...value, headerMediaId: media.id });
-            setPicking(false);
+            if (picking === 'header') onChange({ ...value, headerMediaId: media.id });
+            else onChange({ ...value, cardMediaIds: (current?.cards ?? []).map((_c, j) => (j === picking ? media.id : (value.cardMediaIds?.[j] ?? null))) });
+            setPicking(null);
           }}
         />
       )}

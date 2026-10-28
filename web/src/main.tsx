@@ -12,6 +12,7 @@ import { NumbersPage } from './pages/Numbers';
 import { ContactsPage } from './pages/Contacts';
 import { SegmentsPage } from './pages/Segments';
 import { TemplatesPage } from './pages/Templates';
+import { TemplateBuilderPage } from './pages/TemplateBuilder';
 import { CampaignsPage } from './pages/Campaigns';
 import { CampaignEditorPage } from './pages/CampaignEditor';
 import { CampaignReportPage } from './pages/CampaignReport';
@@ -83,6 +84,7 @@ function BusinessRoutes() {
       <Route path="/campaigns/:id" element={<CampaignReportPage />} />
       <Route path="/automations" element={<AutomationsPage />} />
       <Route path="/templates" element={<TemplatesPage />} />
+      <Route path="/templates/meta/:number/:templateId" element={<TemplateBuilderPage />} />
       <Route path="/contacts" element={<ContactsPage />} />
       <Route path="/segments" element={<SegmentsPage />} />
       <Route path="/numbers" element={<NumbersPage />} />

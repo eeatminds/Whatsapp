@@ -250,9 +250,20 @@ export interface TemplateSlot {
   hint: string;
   /** Link button routed through click tracking: the value is the real destination URL. */
   tracked?: boolean;
+  /** The blank's name when the template was made in WA Reach, and what to fill it with by default. */
+  name?: string;
+  suggested?: string;
+}
+
+export interface MetaTemplateButton {
+  type: string;
+  text: string;
+  url?: string;
+  phone?: string;
 }
 
 export interface MetaTemplate {
+  id: number;
   name: string;
   language: string;
   status: string;
@@ -263,8 +274,18 @@ export interface MetaTemplate {
   headerText: string | null;
   bodyText: string;
   footerText: string | null;
-  buttons: Array<{ type: string; text: string; url?: string }>;
+  buttons: MetaTemplateButton[];
   slots: TemplateSlot[];
+  offer: { text: string; hasExpiration: boolean } | null;
+  cards: Array<{ headerFormat: string; bodyText: string | null; buttons: MetaTemplateButton[] }>;
+  rejectedReason: string | null;
+  statusNote: string | null;
+  quality: string | null;
+  madeHere: boolean;
+  canEdit: boolean;
+  updatedAt: string | null;
+  examples: Record<string, string>;
+  exampleMedia: { header: number | null; cards: Array<number | null> } | null;
 }
 
 export interface TemplateChoice {
@@ -272,6 +293,37 @@ export interface TemplateChoice {
   language: string;
   params: Record<string, string>;
   headerMediaId?: number | null;
+  cardMediaIds?: Array<number | null>;
+  location?: { latitude: number; longitude: number; name?: string | null; address?: string | null } | null;
+  offerExpiresAt?: string | null;
+}
+
+export type DraftButton =
+  | { type: 'quick_reply'; text: string }
+  | { type: 'url'; text: string; url: string; mode: 'static' | 'dynamic' | 'tracked'; example: string }
+  | { type: 'phone'; text: string; phone: string }
+  | { type: 'copy_code'; example: string };
+
+/** The form a Meta template is made from in WA Reach. */
+export interface TemplateDraft {
+  name: string;
+  language: string;
+  category: 'MARKETING' | 'UTILITY';
+  format: 'standard' | 'carousel' | 'offer';
+  header: { type: 'none' | 'text' | 'image' | 'video' | 'document' | 'location'; text: string; mediaId: number | null };
+  body: string;
+  footer: string;
+  buttons: DraftButton[];
+  samples: Record<string, string>;
+  offer: { text: string; expires: boolean };
+  cardFormat: 'image' | 'video';
+  cards: Array<{ mediaId: number | null; body: string; buttons: Array<Exclude<DraftButton, { type: 'copy_code' }>> }>;
+}
+
+export interface TemplateProblem {
+  level: 'error' | 'warning';
+  field: string;
+  message: string;
 }
 
 export interface GatewayStatus {
