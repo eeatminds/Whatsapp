@@ -16,7 +16,9 @@ const dataDir = resolve(process.env.DATA_DIR ?? './data');
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const path = join(dir, name);
-    if (name === '.backup' || name === 'backups') continue;
+    // chat-media holds copies of WhatsApp chat files (they stay on the phone): kept out of every
+    // backup so seven daily copies don't fill the disk.
+    if (name === '.backup' || name === 'backups' || name === 'chat-media') continue;
     const info = statSync(path);
     if (info.isDirectory()) walk(path, out);
     else out.push(path);

@@ -109,7 +109,7 @@ export interface IncomingMessage {
   isStatusBroadcast?: boolean;
   senderPhone?: string | null;
   contact?: { name?: string; pushName?: string };
-  media?: { mimetype?: string; filename?: string };
+  media?: { mimetype?: string; filename?: string; data?: string; omitted?: boolean; sizeBytes?: number };
   location?: { latitude?: number; longitude?: number; description?: string; address?: string };
 }
 
@@ -120,7 +120,9 @@ const MAX_BODY = 65_536;
  * What of a WhatsApp message goes into the Inbox: its text (a caption for files, a place for
  * locations) and what file it carries. Null for things that are not messages a person wrote.
  */
-export function copyOf(message: IncomingMessage): { type: string; body: string | null; mediaMime: string | null; mediaName: string | null } | null {
+export function copyOf(
+  message: IncomingMessage,
+): { type: string; body: string | null; mediaMime: string | null; mediaName: string | null; mediaSize: number | null } | null {
   const type = message.type ?? 'text';
   if (NON_MESSAGE_TYPES.has(type) || message.isStatusBroadcast) return null;
   let body = typeof message.body === 'string' ? message.body : '';
@@ -135,7 +137,16 @@ export function copyOf(message: IncomingMessage): { type: string; body: string |
   if ((type === 'text' || type === 'chat') && !body.trim()) return null;
   const mimetype = typeof message.media?.mimetype === 'string' ? message.media.mimetype.slice(0, 100) : null;
   const filename = typeof message.media?.filename === 'string' ? message.media.filename.slice(0, 255) : null;
-  return { type: type === 'chat' ? 'text' : type, body: body ? body.slice(0, MAX_BODY) : null, mediaMime: mimetype || null, mediaName: filename || null };
+  const declared = Number(message.media?.sizeBytes);
+  const inline = typeof message.media?.data === 'string' && !/^https?:/i.test(message.media.data) ? Buffer.byteLength(message.media.data, 'base64') : 0;
+  const size = Number.isFinite(declared) && declared > 0 ? Math.round(declared) : inline || null;
+  return {
+    type: type === 'chat' ? 'text' : type,
+    body: body ? body.slice(0, MAX_BODY) : null,
+    mediaMime: mimetype || null,
+    mediaName: filename || null,
+    mediaSize: size,
+  };
 }
 
 /** WhatsApp chats with one person (not groups, channels, broadcasts or status). */
@@ -363,6 +374,7 @@ export class InboundService {
         at,
         mediaMime: copy.mediaMime,
         mediaName: copy.mediaName,
+        mediaSize: copy.mediaSize,
       });
       if (!inserted) return 'duplicate_message' as const;
 

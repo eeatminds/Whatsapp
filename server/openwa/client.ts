@@ -85,16 +85,6 @@ export interface OpenWAClientOptions {
   fetchImpl?: typeof fetch;
 }
 
-/** A chat in the WhatsApp account (most recent first). */
-export interface OpenWAChat {
-  id: string;
-  name?: string | null;
-  isGroup?: boolean;
-  kind?: string;
-  unreadCount?: number;
-  timestamp?: number;
-}
-
 /** A message read live from WhatsApp's chat history. */
 export interface OpenWAHistoryMessage {
   id: string;
@@ -110,6 +100,8 @@ export interface OpenWAHistoryMessage {
   isStatusBroadcast?: boolean;
   senderPhone?: string;
   contact?: { pushName?: string; name?: string };
+  /** With includeMedia: the file as base64, or only what it is when it was too big to include. */
+  media?: { mimetype?: string; data?: string; filename?: string; omitted?: boolean; sizeBytes?: number };
 }
 
 export class OpenWAClient {
@@ -241,17 +233,17 @@ export class OpenWAClient {
     );
   }
 
-  listChats(sessionId: string, limit = 100, offset = 0): Promise<OpenWAChat[]> {
-    return this.request('GET', `/sessions/${encodeURIComponent(sessionId)}/chats?limit=${limit}&offset=${offset}`, undefined, 60_000);
-  }
-
-  /** Messages of one chat, read live from WhatsApp (deep: further back, up to 2000). */
-  chatHistory(sessionId: string, chatId: string, limit = 50, deep = false): Promise<OpenWAHistoryMessage[]> {
+  /**
+   * Messages of one chat, read live from WhatsApp (deep: further back, up to 2000). With
+   * includeMedia (last 100 messages at most) photos and files come along as base64.
+   */
+  chatHistory(sessionId: string, chatId: string, limit = 50, deep = false, includeMedia = false): Promise<OpenWAHistoryMessage[]> {
+    const query = `limit=${limit}${deep ? '&deep=true' : ''}${includeMedia && !deep ? '&includeMedia=true' : ''}`;
     return this.request(
       'GET',
-      `/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(chatId)}/history?limit=${limit}${deep ? '&deep=true' : ''}`,
+      `/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(chatId)}/history?${query}`,
       undefined,
-      deep ? 180_000 : 60_000,
+      deep || includeMedia ? 180_000 : 60_000,
     );
   }
 
@@ -306,7 +298,6 @@ export type OpenWAApi = Pick<
   | 'resolvePhone'
   | 'sendText'
   | 'sendMedia'
-  | 'listChats'
   | 'chatHistory'
   | 'getMedia'
 >;

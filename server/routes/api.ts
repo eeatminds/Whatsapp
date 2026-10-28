@@ -12,6 +12,20 @@ import { mediaKind } from '../services/messages.js';
 /** Files from WhatsApp shown inside the Inbox; anything else (documents, odd types) is downloaded. */
 const INLINE_MEDIA = /^(image\/(jpeg|png|gif|webp)|video\/(mp4|webm|3gpp)|audio\/(ogg|mpeg|mp4|aac|amr|wav|webm|opus))$/;
 
+const EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif',
+  'video/mp4': 'mp4', 'video/3gpp': '3gp', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/aac': 'aac',
+  'application/pdf': 'pdf',
+};
+
+/** The file name a download gets: the sender's name for documents, else e.g. "WhatsApp photo 42.jpg". */
+function downloadName(name: string | null, type: string, mimetype: string, id: number): string {
+  if (name) return name.slice(0, 200);
+  const what = type === 'image' ? 'photo' : type === 'voice' || type === 'ptt' ? 'voice message' : type;
+  const ext = EXTENSIONS[mimetype];
+  return `WhatsApp ${what} ${id}${ext ? `.${ext}` : ''}`;
+}
+
 const idParam = z.object({ id: z.coerce.number().int().positive() });
 const sessionParam = z.object({ id: z.string().min(1).max(100) });
 const pageQuery = z.object({
@@ -400,35 +414,26 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
     };
   });
 
-  // Copying chats from the phone: one row per number linked by QR code.
-  app.get('/inbox/sync', async () => {
-    const numbers = (await s.sessions.list()).filter(n => n.channel === 'qr');
-    return { numbers: numbers.map(n => ({ sessionId: n.id, name: n.name, status: n.status, sync: s.history.status(n.id) })) };
-  });
-  app.post('/inbox/sync', async request => {
-    const { sessionId } = z.object({ sessionId: z.string().min(1).max(100).optional() }).parse(request.body ?? {});
-    const ready = (await s.sessions.list()).filter(n => n.channel === 'qr' && n.status === 'ready' && (!sessionId || n.id === sessionId));
-    if (ready.length === 0) throw badRequest(sessionId ? 'That WhatsApp number is not connected right now' : 'Connect a WhatsApp number by QR code first');
-    return { started: ready.map(n => s.history.start(n.id)) };
-  });
-
-  // A photo, video, voice note or document from a WhatsApp chat, fetched from the gateway.
+  // A photo, video, voice note or document from a WhatsApp chat: downloaded once, then kept here.
   app.get('/inbox/media/:id', async (request, reply) => {
-    const message = s.messages.byId(params(idParam, request).id);
-    if (!message || !message.wa_message_id || !mediaKind(message.type) || !s.sessions.owns(message.session_id) || s.sessions.isOfficial(message.session_id)) {
-      return reply.status(404).send({ error: 'This file is not available here. Open the chat on your phone to see it.' });
-    }
-    let file: { mimetype: string; data: Buffer };
+    const { id } = params(idParam, request);
+    const query = z.object({ download: z.enum(['1']).optional(), retry: z.enum(['1']).optional() }).parse(request.query);
+    const message = s.messages.byId(id);
+    if (!message || !mediaKind(message.type)) return reply.status(404).send({ error: 'File not found' });
+    let file: { mimetype: string; data: Buffer } | null;
     try {
-      file = await core.openwa.getMedia(message.session_id, message.chat_id, message.wa_message_id);
+      file = await s.chatMedia.file(id, { retry: query.retry === '1' });
     } catch {
-      return reply.status(404).send({ error: 'This file is not available here. Open the chat on your phone to see it.' });
+      return reply.status(503).send({ error: "Couldn't reach WhatsApp to download this file. Check the number is connected and try again." });
     }
-    const inline = INLINE_MEDIA.test(file.mimetype);
-    const name = (message.media_name || `whatsapp-${message.type}-${message.id}`).slice(0, 200);
+    if (!file) return reply.status(404).send({ error: 'WhatsApp no longer has this file. Open the chat on your phone to see it.' });
+    // "audio/ogg; codecs=opus" is audio/ogg.
+    const mimetype = file.mimetype.split(';')[0].trim().toLowerCase();
+    const inline = !query.download && INLINE_MEDIA.test(mimetype);
+    const name = downloadName(message.media_name, message.type, mimetype, message.id);
     const asciiName = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\;]/g, '_');
     return reply
-      .header('Content-Type', inline ? file.mimetype : 'application/octet-stream')
+      .header('Content-Type', inline ? mimetype : 'application/octet-stream')
       .header('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(name)}`)
       .header('Content-Security-Policy', "default-src 'none'; img-src 'self'; media-src 'self'; sandbox")
       .header('Cross-Origin-Resource-Policy', 'same-origin')
@@ -447,11 +452,10 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
         ? { windowOpenUntil: s.official.windowOpenUntil(sessionId, contact.waChatId ?? chatIdFor(contact.phone)) }
         : null;
     const { messages, hasOlder } = s.messages.thread(id, limit);
-    // Older messages can be read from the phone for numbers linked by QR code.
-    return { contact, messages, hasOlder, canReadPhone: !!sessionId && !official, sessionId, official };
+    return { contact, messages, hasOlder, sessionId, official };
   });
-
-  app.post('/inbox/:id/earlier', async request => s.history.earlier(params(idParam, request).id));
+  // Opening a chat downloads its photos and documents in the background, as WhatsApp Web does.
+  app.post('/inbox/:id/media', async request => ({ downloading: s.chatMedia.prepare(params(idParam, request).id) }));
 
   app.post('/inbox/:id/seen', async request => ({ updated: s.messages.markSeen(params(idParam, request).id) }));
 

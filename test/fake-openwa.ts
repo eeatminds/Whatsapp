@@ -47,10 +47,13 @@ export interface FakeOpenWA {
   /** Numbers (digits) that are NOT on WhatsApp. Everything else "exists". */
   notOnWhatsApp: Set<string>;
   lidMap: Map<string, string>;
-  /** Chats and their history per session, and stored media by message id (for history sync tests). */
-  chats: Map<string, Array<{ id: string; name?: string; isGroup?: boolean; kind?: string; timestamp?: number; unreadCount?: number }>>;
+  /** What each chat looks like on the phone, and the files the gateway stored, by message id. */
   history: Map<string, Array<Record<string, unknown>>>;
   media: Map<string, { mimetype: string; base64: string }>;
+  /** Files only on the phone (not stored by the gateway): sent with chat history when asked for. */
+  phoneMedia: Map<string, { mimetype: string; base64: string; filename?: string }>;
+  /** Chat history requests, to check what was asked for. */
+  historyCalls: Array<{ chatId: string; limit: number; includeMedia: boolean }>;
   /** Failures returned for the next send calls, in order. */
   failNextSends: Failure[];
   /** When set, every send fails with this until cleared. */
@@ -132,9 +135,10 @@ export async function startFakeOpenWA(options: { apiKey?: string; port?: number;
     sent: [],
     notOnWhatsApp: new Set(),
     lidMap: new Map(),
-    chats: new Map(),
     history: new Map(),
     media: new Map(),
+    phoneMedia: new Map(),
+    historyCalls: [],
     failNextSends: [],
     failAllSends: null,
   };
@@ -231,15 +235,20 @@ export async function startFakeOpenWA(options: { apiKey?: string; port?: number;
         return json(res, 200, { contactId, phone: state.lidMap.get(contactId) ?? null });
       }
 
-      if (rest[0] === 'chats' && rest.length === 1 && method === 'GET') {
-        const limit = Number(url.searchParams.get('limit') ?? 100);
-        const offset = Number(url.searchParams.get('offset') ?? 0);
-        return json(res, 200, (state.chats.get(session.id) ?? []).slice(offset, offset + limit));
-      }
       if (rest[0] === 'messages' && rest[2] === 'history' && method === 'GET') {
         const chatId = decodeURIComponent(rest[1]);
         const limit = Number(url.searchParams.get('limit') ?? 50);
-        return json(res, 200, (state.history.get(chatId) ?? []).slice(-limit));
+        const includeMedia = url.searchParams.get('includeMedia') === 'true';
+        state.historyCalls.push({ chatId, limit, includeMedia });
+        const items = (state.history.get(chatId) ?? []).slice(-limit);
+        return json(
+          res,
+          200,
+          items.map(m => {
+            const file = includeMedia ? state.phoneMedia.get(String(m.id)) : undefined;
+            return file ? { ...m, media: { mimetype: file.mimetype, data: file.base64, filename: file.filename } } : m;
+          }),
+        );
       }
       if (rest[0] === 'messages' && rest[3] === 'media' && method === 'GET') {
         const media = state.media.get(decodeURIComponent(rest[2]));

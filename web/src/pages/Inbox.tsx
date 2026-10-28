@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { post, useApi, errorMessage, type Contact, type Conversation, type HistorySync, type Message } from '../api';
+import { post, useApi, errorMessage, type Contact, type Conversation, type Message } from '../api';
 import { Button, Callout, Card, ConsentBadge, Empty, Loading, PageHeader, Segmented, useToast } from '../components/ui';
-import { IconArrowLeft, IconCheck, IconChecks, IconPaperclip, IconRefresh, IconSearch, IconSend } from '../components/icons';
+import { IconArrowLeft, IconCheck, IconChecks, IconPaperclip, IconSearch, IconSend } from '../components/icons';
 import { Bubble } from '../components/composer';
 import { AttachedMedia, MediaPicker } from '../components/media';
 import { displayName, formatPhone, formatTime, initials, relativeTime } from '../format';
@@ -23,7 +23,6 @@ interface ThreadData {
   contact: Contact;
   messages: Message[];
   hasOlder: boolean;
-  canReadPhone: boolean;
   sessionId: string | null;
   official: { windowOpenUntil: string | null } | null;
 }
@@ -42,8 +41,6 @@ function Thread({ contactId, onBack }: { contactId: number; onBack: () => void }
   const [mediaId, setMediaId] = useState<number | null>(null);
   const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [loadingEarlier, setLoadingEarlier] = useState(false);
-  const [atStart, setAtStart] = useState(false);
   const list = useRef<HTMLDivElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
   // Where the reader was before older messages were added on top, so the view doesn't jump.
@@ -55,6 +52,11 @@ function Thread({ contactId, onBack }: { contactId: number; onBack: () => void }
   useEffect(() => {
     void post(`/api/inbox/${contactId}/seen`).catch(() => undefined);
   }, [contactId, count]);
+  // Like WhatsApp Web, opening a chat downloads its photos and documents.
+  const fetchFiles = !!data?.messages.some(m => m.file && !m.file.ready && !m.file.missing);
+  useEffect(() => {
+    if (fetchFiles) void post(`/api/inbox/${contactId}/media`).catch(() => undefined);
+  }, [contactId, fetchFiles]);
   useLayoutEffect(() => {
     const el = list.current;
     if (keep.current && el) {
@@ -68,29 +70,11 @@ function Thread({ contactId, onBack }: { contactId: number; onBack: () => void }
 
   if (!data) return <Loading />;
   const { contact } = data;
-  const canLoadEarlier = data.hasOlder || (data.canReadPhone && !atStart);
 
-  const loadEarlier = async () => {
+  const loadEarlier = () => {
     const el = list.current;
     if (el) keep.current = { height: el.scrollHeight, top: el.scrollTop };
-    if (data.hasOlder) {
-      setLimit(l => l + PAGE);
-      return;
-    }
-    // Everything stored is shown: read further back from WhatsApp on the phone.
-    setLoadingEarlier(true);
-    try {
-      const result = await post<{ added: number; more: boolean }>(`/api/inbox/${contactId}/earlier`);
-      if (result.added > 0) setLimit(l => l + result.added);
-      else keep.current = null;
-      if (!result.more) setAtStart(true);
-      if (result.added === 0) toast.success('This is the start of the chat');
-    } catch (err) {
-      keep.current = null;
-      toast.error(errorMessage(err));
-    } finally {
-      setLoadingEarlier(false);
-    }
+    setLimit(l => l + PAGE);
   };
 
   const send = async () => {
@@ -132,9 +116,9 @@ function Thread({ contactId, onBack }: { contactId: number; onBack: () => void }
         </div>
       </div>
       <div className="wa-preview thread-messages" ref={list}>
-        {canLoadEarlier && data.messages.length > 0 && (
-          <Button size="sm" className="thread-earlier" loading={loadingEarlier} onClick={() => void loadEarlier()}>
-            {loadingEarlier ? 'Reading older messages from your phone…' : 'Load earlier messages'}
+        {data.hasOlder && (
+          <Button size="sm" className="thread-earlier" onClick={loadEarlier}>
+            Load earlier messages
           </Button>
         )}
         {data.messages.length === 0 && <span className="muted small" style={{ margin: 'auto' }}>No messages yet. Say hello below.</span>}
@@ -152,7 +136,11 @@ function Thread({ contactId, onBack }: { contactId: number; onBack: () => void }
               <Bubble
                 text={m.body ?? (m.type !== 'text' && !m.file ? `[${m.type}]` : '')}
                 mediaId={m.direction === 'out' ? m.mediaId : null}
-                file={m.file ? { url: `/api/inbox/media/${m.id}`, kind: m.file.kind, name: m.file.name } : null}
+                file={
+                  m.file
+                    ? { url: `/api/inbox/media/${m.id}`, kind: m.file.kind, sticker: m.file.sticker, name: m.file.name, mimetype: m.file.mimetype, size: m.file.size, missing: m.file.missing }
+                    : null
+                }
                 direction={m.direction}
                 time={formatTime(m.createdAt)}
                 label={m.direction === 'out' ? SOURCE_LABEL[m.sourceType] || undefined : undefined}
@@ -246,64 +234,6 @@ function Thread({ contactId, onBack }: { contactId: number; onBack: () => void }
   );
 }
 
-interface SyncNumber {
-  sessionId: string;
-  name: string;
-  status: string;
-  sync: HistorySync | null;
-}
-
-/** Copy the chats already on the phone into the Inbox (done once automatically for each new number). */
-function PhoneSync() {
-  const [running, setRunning] = useState(false);
-  const { data, reload } = useApi<{ numbers: SyncNumber[] }>('/api/inbox/sync', { poll: running ? 3000 : 30000 });
-  const [starting, setStarting] = useState(false);
-  const toast = useToast();
-  const numbers = data?.numbers ?? [];
-  const active = numbers.filter(n => n.sync?.state === 'running');
-  useEffect(() => setRunning(active.length > 0), [active.length]);
-  if (numbers.length === 0) return null;
-
-  const done = numbers.map(n => n.sync).filter((s): s is HistorySync => s?.state === 'done');
-  const failed = numbers.find(n => n.sync?.state === 'failed');
-  let note: string;
-  if (active.length > 0) {
-    const total = active.reduce((sum, n) => sum + (n.sync?.chatsTotal ?? 0), 0);
-    const doneChats = active.reduce((sum, n) => sum + (n.sync?.chatsDone ?? 0), 0);
-    note = total ? `Copying chats from your phone: ${doneChats} of ${total}` : 'Copying chats from your phone…';
-  } else if (failed) {
-    note = `Couldn't finish copying chats from ${failed.name}: ${failed.sync?.error ?? 'try again'}`;
-  } else if (done.length > 0) {
-    const last = done.map(s => s.finishedAt ?? s.startedAt).sort().pop()!;
-    note = `Chats copied from your phone ${relativeTime(last)}`;
-  } else {
-    note = 'Chats on your phone are copied here once a number is connected';
-  }
-
-  const start = async () => {
-    setStarting(true);
-    try {
-      await post('/api/inbox/sync', {});
-      setRunning(true);
-      await reload();
-      toast.success('Copying your WhatsApp chats. New messages appear as they are copied.');
-    } catch (err) {
-      toast.error(errorMessage(err));
-    } finally {
-      setStarting(false);
-    }
-  };
-
-  return (
-    <div className="row wrap" style={{ gap: 8 }}>
-      <span className={`small ${failed && active.length === 0 ? 'error-text' : 'secondary'}`}>{note}</span>
-      <Button size="sm" icon={<IconRefresh size={14} />} loading={starting || active.length > 0} onClick={() => void start()}>
-        Sync chats from WhatsApp
-      </Button>
-    </div>
-  );
-}
-
 export function InboxPage() {
   const { contactId } = useParams();
   const navigate = useNavigate();
@@ -317,8 +247,7 @@ export function InboxPage() {
     <div className="page" style={{ maxWidth: 1280 }}>
       <PageHeader
         title="Inbox"
-        description="A copy of the chats on your WhatsApp numbers, including messages you send from the phone. People who aren't in your contacts yet are marked New."
-        actions={<PhoneSync />}
+        description="Every message on your WhatsApp numbers from the moment each number is linked, including replies you send from the phone. People who aren't in your contacts yet are marked New."
       />
       <Card bodyClass="">
         <div className={`inbox ${selected ? 'has-thread' : ''}`}>
@@ -346,7 +275,7 @@ export function InboxPage() {
                   ? ''
                   : filter === 'replied'
                     ? 'Contacts who write back to you appear here.'
-                    : 'Chats on your connected WhatsApp number appear here, including older ones copied from the phone.'}
+                    : 'Messages on your WhatsApp number appear here from the moment it is linked, including replies you send from the phone.'}
               </Empty>
             ) : (
               data?.items.map(c => (

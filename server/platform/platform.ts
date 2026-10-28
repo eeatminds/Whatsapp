@@ -653,6 +653,9 @@ export class Platform {
       const fixed = services.leads.repair();
       if (fixed) this.log.info(`Filled in names/emails for ${fixed} leads of ${tenant}`);
       services.contacts.tidyDateValues(tidyValue);
+      // The Inbox starts when a number is linked: old chats an earlier version copied in are removed.
+      const removed = services.chatMedia.removeCopiedHistory();
+      if (removed.messages) this.log.info(`Removed ${removed.messages} old chat messages (from before the number was linked) for ${tenant}`);
       // Numbers added before countries were tracked get their country and Indian/International tag.
       const tagged = services.contacts.assignCountries();
       if (tagged) this.log.info(`Worked out the country of ${tagged} numbers for ${tenant}`);

@@ -411,4 +411,11 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE contacts ADD COLUMN country TEXT;
   CREATE INDEX contacts_country ON contacts (country);
   `,
+  // 13: photos and documents of WhatsApp chats, kept on this server once downloaded: the file's
+  // size, its name in the business's chat-media folder, and whether WhatsApp no longer has it.
+  `
+  ALTER TABLE messages ADD COLUMN media_size INTEGER;
+  ALTER TABLE messages ADD COLUMN media_file TEXT;
+  ALTER TABLE messages ADD COLUMN media_missing INTEGER NOT NULL DEFAULT 0;
+  `,
 ];

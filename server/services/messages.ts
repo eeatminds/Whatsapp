@@ -23,6 +23,11 @@ export interface MessageRow {
   created_at: string;
   media_mime: string | null;
   media_name: string | null;
+  media_size: number | null;
+  /** The downloaded copy in the business's chat-media folder. */
+  media_file: string | null;
+  /** 1: WhatsApp no longer has the file (or it is too far back to download). */
+  media_missing: number;
 }
 
 export interface Message {
@@ -38,7 +43,17 @@ export interface Message {
   sourceId: number | null;
   createdAt: string;
   /** A photo, video, voice note or document from WhatsApp, served by /api/inbox/media/:id. */
-  file: { kind: MediaKind; mimetype: string | null; name: string | null } | null;
+  file: {
+    kind: MediaKind;
+    sticker: boolean;
+    mimetype: string | null;
+    name: string | null;
+    size: number | null;
+    /** Already downloaded to this server. */
+    ready: boolean;
+    /** WhatsApp no longer has it. */
+    missing: boolean;
+  } | null;
 }
 
 export type MediaKind = 'image' | 'video' | 'audio' | 'document';
@@ -77,11 +92,21 @@ function toMessage(row: MessageRow): Message {
     sourceType: row.source_type,
     sourceId: row.source_id,
     createdAt: row.created_at,
-    file: kind ? { kind, mimetype: row.media_mime, name: row.media_name } : null,
+    file: kind
+      ? {
+          kind,
+          sticker: row.type === 'sticker',
+          mimetype: row.media_mime,
+          name: row.media_name,
+          size: row.media_size,
+          ready: !!row.media_file,
+          missing: !!row.media_missing,
+        }
+      : null,
   };
 }
 
-/** One message read from a phone's chat history or reported by the gateway. */
+/** A message typed on the phone, reported by the gateway. */
 export interface CopiedMessage {
   contactId: number;
   sessionId: string;
@@ -92,6 +117,7 @@ export interface CopiedMessage {
   body: string | null;
   mediaMime?: string | null;
   mediaName?: string | null;
+  mediaSize?: number | null;
   at: string;
   seen: boolean;
 }
@@ -185,11 +211,12 @@ export class MessagesService {
     at: string;
     mediaMime?: string | null;
     mediaName?: string | null;
+    mediaSize?: number | null;
   }): boolean {
     const { changes } = this.core.db.run(
       `INSERT INTO messages (contact_id, session_id, chat_id, direction, wa_message_id, type, body, status, source_type, seen, created_at,
-                             media_mime, media_name)
-       VALUES (?, ?, ?, 'in', ?, ?, ?, 'received', 'inbound', 0, ?, ?, ?)
+                             media_mime, media_name, media_size)
+       VALUES (?, ?, ?, 'in', ?, ?, ?, 'received', 'inbound', 0, ?, ?, ?, ?)
        ON CONFLICT (session_id, wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING`,
       input.contactId,
       input.sessionId,
@@ -200,20 +227,20 @@ export class MessagesService {
       input.at,
       input.mediaMime ?? null,
       input.mediaName ?? null,
+      input.mediaSize ?? null,
     );
     return changes > 0;
   }
 
   /**
-   * Keep a copy of a message that WA Reach did not send or receive live: one typed on the phone, or
-   * one read from the phone's chat history. Nothing is triggered by it (no auto-replies, no reports).
-   * Returns false when the message is already in the Inbox.
+   * Keep a message typed on the phone itself (WA Reach didn't send it). Nothing is triggered by it
+   * (no auto-replies, no reports). Returns false when the message is already in the Inbox.
    */
   recordCopy(input: CopiedMessage): boolean {
     const { changes } = this.core.db.run(
       `INSERT INTO messages (contact_id, session_id, chat_id, direction, wa_message_id, type, body, status, source_type, seen, created_at,
-                             media_mime, media_name)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             media_mime, media_name, media_size)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (session_id, wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING`,
       input.contactId,
       input.sessionId,
@@ -228,24 +255,9 @@ export class MessagesService {
       input.at,
       input.mediaMime ?? null,
       input.mediaName ?? null,
+      input.mediaSize ?? null,
     );
     return changes > 0;
-  }
-
-  /** Messages this number has for one chat (to know how far back the Inbox copy reaches). */
-  countForChat(contactId: number, sessionId: string): number {
-    return this.core.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM messages WHERE contact_id = ? AND session_id = ?', contactId, sessionId)?.n ?? 0;
-  }
-
-  /** The chat id WhatsApp uses for this contact on this number (a phone chat id or a privacy id). */
-  chatIdFor(contactId: number, sessionId: string): string | null {
-    return (
-      this.core.db.get<{ chat_id: string }>(
-        'SELECT chat_id FROM messages WHERE contact_id = ? AND session_id = ? ORDER BY created_at DESC, id DESC LIMIT 1',
-        contactId,
-        sessionId,
-      )?.chat_id ?? null
-    );
   }
 
   byId(id: number): MessageRow | null {
@@ -360,20 +372,21 @@ export class MessagesService {
       consent: string;
       body: string | null;
       type: string;
+      media_name: string | null;
       direction: 'in' | 'out';
       created_at: string;
       session_id: string;
       unread: number;
       saved: number;
     }>(
-      // Latest by time, not insert order: chat history copied from the phone arrives after newer messages.
+      // Latest by time, not insert order: a webhook retried later can arrive after newer messages.
       `WITH ranked AS (
          SELECT contact_id, id, ROW_NUMBER() OVER (PARTITION BY contact_id ORDER BY created_at DESC, id DESC) AS rn FROM messages
           WHERE contact_id IS NOT NULL
             ${options.unreadOnly || options.repliedOnly ? "AND contact_id IN (SELECT DISTINCT contact_id FROM messages WHERE direction = 'in' AND contact_id IS NOT NULL)" : ''}
        ),
        latest AS (SELECT contact_id, id FROM ranked WHERE rn = 1)
-       SELECT m.contact_id, c.name, c.phone, c.consent, c.saved, m.body, m.type, m.direction, m.created_at, m.session_id,
+       SELECT m.contact_id, c.name, c.phone, c.consent, c.saved, m.body, m.type, m.media_name, m.direction, m.created_at, m.session_id,
               (SELECT COUNT(*) FROM messages u WHERE u.contact_id = m.contact_id AND u.direction = 'in' AND u.seen = 0) AS unread
          FROM latest l JOIN messages m ON m.id = l.id JOIN contacts c ON c.id = m.contact_id
         WHERE 1 ${filter}
@@ -389,7 +402,7 @@ export class MessagesService {
         name: r.name,
         phone: r.phone,
         consent: r.consent,
-        lastMessage: r.body || previewOf(r.type),
+        lastMessage: r.body || (r.type === 'document' && r.media_name ? `📄 ${r.media_name}` : previewOf(r.type)),
         lastDirection: r.direction,
         lastAt: r.created_at,
         unread: r.unread,

@@ -18,7 +18,7 @@ import { Dispatcher } from './dispatcher.js';
 import { AnalyticsService } from './analytics.js';
 import { OfficialNumbersService } from './official.js';
 import { LeadsService } from './leads.js';
-import { HistoryService } from './history.js';
+import { ChatMediaService } from './chat-media.js';
 
 export function createServices(core: Core, options: { random?: () => number; scope?: SessionScope } = {}) {
   const bus = new Bus();
@@ -39,10 +39,10 @@ export function createServices(core: Core, options: { random?: () => number; sco
   const autoReplies = new AutoRepliesService(core, settings, media, tags, contacts, sequences, outbox);
   const test = core.config.nodeEnv === 'test';
   const inbound = new InboundService(core, settings, contacts, messages, campaigns, autoReplies, outbox, sessions, bus, official, test ? 30 : 15_000);
-  const history = new HistoryService(core, contacts, messages, sessions, test ? 0 : 400);
+  const chatMedia = new ChatMediaService(core, messages, sessions);
   const dispatcher = new Dispatcher(
     core,
-    { settings, sessions, campaigns, sequences, messages, outbox, contacts, sender, inbound, autoReplies, history },
+    { settings, sessions, campaigns, sequences, messages, outbox, contacts, sender, inbound, autoReplies, chatMedia },
     options.random,
   );
   const analytics = new AnalyticsService(core, settings, contacts, messages);
@@ -64,7 +64,7 @@ export function createServices(core: Core, options: { random?: () => number; sco
     outbox,
     autoReplies,
     inbound,
-    history,
+    chatMedia,
     dispatcher,
     analytics,
     leads,

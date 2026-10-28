@@ -25,6 +25,27 @@ const FIRST = ['Aarav', 'Priya', 'Rohan', 'Ananya', 'Vikram', 'Meera', 'Karthik'
 const LAST = ['Sharma', 'Iyer', 'Reddy', 'Nair', 'Gupta', 'Kulkarni', 'Menon', 'Rao', 'Singh', 'Patel', 'Joshi', 'Das', 'Khan', 'Bose', 'Pillai', 'Shetty'];
 const CITIES = ['Bengaluru', 'Mumbai', 'Pune', 'Chennai', 'Hyderabad', 'Delhi', 'Kochi'];
 
+/** A two-second voice note (a soft tone) for the Inbox demo. */
+function demoVoice(): string {
+  const rate = 8000;
+  const samples = rate * 2;
+  const wav = Buffer.alloc(44 + samples * 2);
+  wav.write('RIFF', 0, 'ascii');
+  wav.writeUInt32LE(36 + samples * 2, 4);
+  wav.write('WAVEfmt ', 8, 'ascii');
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(rate, 24);
+  wav.writeUInt32LE(rate * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write('data', 36, 'ascii');
+  wav.writeUInt32LE(samples * 2, 40);
+  for (let i = 0; i < samples; i++) wav.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * i) / rate) * 6000 * Math.min(1, (samples - i) / 2000)), 44 + i * 2);
+  return wav.toString('base64');
+}
+
 /** A small PNG "photo" (a cup on a warm background) for the Inbox demo. */
 function demoPhoto(): string {
   const w = 360;
@@ -283,38 +304,6 @@ async function main(): Promise<void> {
     s.contacts.upsert({ phone, name, consent: 'opted_in', consentSource: 'Store checkout opt-in', attributes: { city } });
   }
 
-  // Chats already on the phone: copied into the Inbox when the number connects (groups are left out).
-  const chatOf = (phone: string) => `${phone}@c.us`;
-  const ago = (minutes: number) => Math.floor((Date.now() - minutes * 60_000) / 1000);
-  const meera = chatOf('919845012345');
-  const oliver = chatOf('447400123456');
-  fake.chats.set(session.id, [
-    { id: meera, name: 'Meera (wholesale)', kind: 'individual', unreadCount: 1 },
-    { id: oliver, name: 'Oliver Brown', kind: 'individual', unreadCount: 0 },
-    { id: '120363000000000@g.us', name: 'Family', isGroup: true, kind: 'group' },
-  ]);
-  const own = (chat: string, id: string, body: string, minutes: number, fromMe = false, type = 'text') => ({
-    id,
-    from: fromMe ? '919900011122@c.us' : chat,
-    to: fromMe ? chat : '919900011122@c.us',
-    body,
-    type,
-    timestamp: ago(minutes),
-    fromMe,
-    kind: 'individual',
-  });
-  fake.history.set(meera, [
-    own(meera, 'h_m1', 'Hi! Do you supply 20 kg of Assam CTC every month?', 9 * 1440),
-    own(meera, 'h_m2', 'Yes, we do. ₹380/kg for 20 kg, delivered free in Bengaluru.', 9 * 1440 - 30, true),
-    own(meera, 'h_m3', '', 9 * 1440 - 40, false, 'image'),
-    own(meera, 'h_m4', 'That is our shop. Can you send a sample first?', 9 * 1440 - 41),
-    own(meera, 'h_m5', 'Sure, sending 250 g tomorrow 👍', 9 * 1440 - 60, true),
-    own(meera, 'h_m6', 'Sample was great. Please send the invoice for 20 kg.', 2 * 1440),
-  ]);
-  fake.history.set(oliver, [
-    own(oliver, 'h_o1', 'Hello from London! Do you ship Masala Chai to the UK?', 4 * 1440),
-    own(oliver, 'h_o2', 'Yes! UK delivery takes 7–10 days. Shipping is ₹900 per order.', 4 * 1440 - 20, true),
-  ]);
   // A photo a customer sent today, and the owner's answer typed on the phone.
   fake.media.set('demo_photo', { mimetype: 'image/png', base64: demoPhoto() });
   offset = -15 * 60_000;
@@ -329,10 +318,25 @@ async function main(): Promise<void> {
     sessionId: session.id,
     data: { id: 'demo_phone_reply', from: '919900011122@c.us', to: '919900123456@c.us', chatId: '919900123456@c.us', body: 'Yes! 500 g is ₹450. Shall I keep one for you?', type: 'text', fromMe: true, kind: 'individual' },
   });
+  // A price list sent as a PDF, and a voice note (the gateway keeps the files it receives).
+  fake.media.set('demo_pdf', { mimetype: 'application/pdf', base64: Buffer.from('%PDF-1.4\n% Chai & Co. wholesale price list\n').toString('base64') });
+  offset = -6 * 60_000;
+  await s.inbound.handle({
+    event: 'message.sent',
+    sessionId: session.id,
+    data: {
+      id: 'demo_pdf', from: '919900011122@c.us', to: '919900123456@c.us', chatId: '919900123456@c.us', body: 'Here is our full price list', type: 'document',
+      fromMe: true, kind: 'individual', media: { mimetype: 'application/pdf', filename: 'Chai & Co price list Oct 2026.pdf', sizeBytes: 248_310 },
+    },
+  });
+  fake.media.set('demo_voice', { mimetype: 'audio/wav', base64: demoVoice() });
+  offset = -2 * 60_000;
+  await s.inbound.handle({
+    event: 'message.received',
+    sessionId: session.id,
+    data: { id: 'demo_voice', from: '919900123456@c.us', body: '', type: 'voice', kind: 'individual', media: { mimetype: 'audio/wav', sizeBytes: 32_044 }, contact: { pushName: 'Kiran' } },
+  });
   offset = 0;
-  // Seeding ticked the dispatcher before these chats existed: copy them now.
-  s.history.start(session.id);
-  await s.history.idle();
 
   // ---------------------------------------------------------------- serve
   const app = await buildApp(platform, { staticDir: join(here, '..', 'dist', 'web') });

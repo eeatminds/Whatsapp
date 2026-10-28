@@ -404,18 +404,17 @@ export interface Message {
   sourceId: number | null;
   createdAt: string;
   /** A photo, video, voice note or document from WhatsApp. */
-  file: { kind: 'image' | 'video' | 'audio' | 'document'; mimetype: string | null; name: string | null } | null;
-}
-
-export interface HistorySync {
-  sessionId: string;
-  state: 'running' | 'done' | 'failed';
-  chatsTotal: number;
-  chatsDone: number;
-  messages: number;
-  error: string | null;
-  startedAt: string;
-  finishedAt: string | null;
+  file: {
+    kind: 'image' | 'video' | 'audio' | 'document';
+    sticker: boolean;
+    mimetype: string | null;
+    name: string | null;
+    size: number | null;
+    /** Already downloaded to the server. */
+    ready: boolean;
+    /** WhatsApp no longer has it. */
+    missing: boolean;
+  } | null;
 }
 
 export interface Conversation {

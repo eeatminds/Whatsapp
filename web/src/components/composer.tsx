@@ -2,7 +2,9 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { post, useApi, type Media, type Template } from '../api';
 import { Button, Modal } from './ui';
 import { AttachedMedia, MediaPicker } from './media';
-import { IconDownload, IconFile, IconPaperclip, IconTemplate } from './icons';
+import { IconDownload, IconFile, IconPaperclip, IconTemplate, IconX } from './icons';
+import { createPortal } from 'react-dom';
+import { formatBytes } from '../format';
 
 /** Render WhatsApp's lightweight markup (*bold* _italic_ ~strike~ ```mono```) as React nodes. */
 export function WhatsAppText({ text }: { text: string }) {
@@ -34,35 +36,155 @@ function useMedia(mediaId: number | null | undefined): Media | undefined {
 export interface ChatFile {
   url: string;
   kind: 'image' | 'video' | 'audio' | 'document';
+  sticker?: boolean;
   name: string | null;
+  mimetype?: string | null;
+  size?: number | null;
+  /** WhatsApp no longer has it (deleted from the phone, or too far back). */
+  missing?: boolean;
 }
 
-const FILE_LABEL: Record<ChatFile['kind'], string> = { image: 'Photo', video: 'Video', audio: 'Audio', document: 'Document' };
+const FILE_LABEL: Record<ChatFile['kind'], string> = { image: 'Photo', video: 'Video', audio: 'Voice message', document: 'Document' };
 
-function ChatFileView({ file }: { file: ChatFile }) {
-  const [failed, setFailed] = useState(false);
-  const label = file.kind === 'document' ? file.name || FILE_LABEL.document : FILE_LABEL[file.kind];
+/** "PDF", "DOC", "XLS"... from the file name, else from its type. */
+function docType(name: string | null | undefined, mimetype: string | null | undefined): string {
+  const ext = name?.match(/\.([a-z0-9]{1,5})$/i)?.[1]?.toLowerCase();
+  const byExt: Record<string, string> = { doc: 'DOC', docx: 'DOC', xls: 'XLS', xlsx: 'XLS', csv: 'CSV', ppt: 'PPT', pptx: 'PPT', zip: 'ZIP', rar: 'ZIP', txt: 'TXT', pdf: 'PDF' };
+  if (ext && byExt[ext]) return byExt[ext];
+  if (mimetype === 'application/pdf') return 'PDF';
+  if (mimetype?.includes('spreadsheet') || mimetype?.includes('excel')) return 'XLS';
+  if (mimetype?.includes('word')) return 'DOC';
+  if (mimetype?.includes('presentation') || mimetype?.includes('powerpoint')) return 'PPT';
+  return ext ? ext.toUpperCase().slice(0, 4) : 'FILE';
+}
+
+/** The file name from a download's Content-Disposition header. */
+function headerFileName(header: string | null): string | null {
+  const encoded = header?.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      // fall through
+    }
+  }
+  return header?.match(/filename="([^"]+)"/i)?.[1] ?? null;
+}
+
+/** Full-screen photo, as WhatsApp Web opens one: download, close with Esc or a click outside. */
+function PhotoViewer({ file, time, onClose }: { file: ChatFile; time?: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return createPortal(
+    <div className="photo-viewer" role="dialog" aria-modal="true" aria-label="Photo" onClick={onClose}>
+      <div className="photo-viewer-bar" onClick={e => e.stopPropagation()}>
+        <span className="small">{time}</span>
+        <div className="row" style={{ gap: 6 }}>
+          <a className="btn sm" href={`${file.url}?download=1`} aria-label="Download">
+            <IconDownload size={16} /> Download
+          </a>
+          <button type="button" className="btn sm" onClick={onClose} aria-label="Close">
+            <IconX size={16} />
+          </button>
+        </div>
+      </div>
+      <img src={file.url} alt="Photo" onClick={e => e.stopPropagation()} />
+    </div>,
+    document.body,
+  );
+}
+
+/** A document card like WhatsApp Web's: type, name, size; a click downloads it. */
+function DocumentCard({ file }: { file: ChatFile }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [error, setError] = useState('');
+  const type = docType(file.name, file.mimetype);
+  const download = async (retry = false) => {
+    setState('loading');
+    try {
+      const res = await fetch(`${file.url}?download=1${retry ? '&retry=1' : ''}`, { credentials: 'same-origin' });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(body.error || 'Could not download this document');
+      }
+      const blob = await res.blob();
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = file.name || headerFileName(res.headers.get('content-disposition')) || `WhatsApp document.${type.toLowerCase()}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 10_000);
+      setState('idle');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setState('error');
+    }
+  };
+  return (
+    <div className="doc-wrap">
+      <button type="button" className="doc-card" onClick={() => void download(state === 'error')} disabled={state === 'loading'} title="Download">
+        <span className={`doc-type doc-${type.toLowerCase()}`}>{type}</span>
+        <span className="doc-info">
+          <span className="doc-name">{file.name || 'Document'}</span>
+          <span className="doc-meta">
+            {type}
+            {file.size ? ` · ${formatBytes(file.size)}` : ''}
+          </span>
+        </span>
+        <span className="doc-action" aria-hidden="true">
+          {state === 'loading' ? <span className="spinner" style={{ width: 16, height: 16 }} /> : <IconDownload size={18} />}
+        </span>
+      </button>
+      {state === 'error' && <span className="doc-error">{error} Tap to try again.</span>}
+    </div>
+  );
+}
+
+function ChatFileView({ file, time }: { file: ChatFile; time?: string }) {
+  const [failed, setFailed] = useState(!!file.missing);
+  const [loaded, setLoaded] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [viewing, setViewing] = useState(false);
+  const src = attempt ? `${file.url}?retry=1&n=${attempt}` : file.url;
+  if (file.kind === 'document') return <DocumentCard file={file} />;
   if (failed) {
     return (
-      <div className="doc" title="Older files stay on your phone">
-        <IconFile size={18} /> {label}: open WhatsApp on your phone to see it
+      <div className="media-gone">
+        <IconFile size={18} />
+        <span>
+          {FILE_LABEL[file.kind]} not available here: open WhatsApp on your phone to {file.kind === 'audio' ? 'listen to' : 'see'} it.{' '}
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => {
+              setFailed(false);
+              setLoaded(false);
+              setAttempt(n => n + 1);
+            }}
+          >
+            Try again
+          </button>
+        </span>
       </div>
     );
   }
   if (file.kind === 'image') {
     return (
-      <a href={file.url} target="_blank" rel="noopener noreferrer">
-        <img className="media" src={file.url} alt={label} loading="lazy" onError={() => setFailed(true)} />
-      </a>
+      <>
+        <button type="button" className={`media-photo ${file.sticker ? 'sticker' : ''} ${loaded ? 'loaded' : ''}`} onClick={() => !file.sticker && setViewing(true)} aria-label="Open photo">
+          {!loaded && <span className="spinner" style={{ width: 22, height: 22 }} />}
+          <img src={src} alt={FILE_LABEL.image} loading="lazy" onLoad={() => setLoaded(true)} onError={() => setFailed(true)} />
+        </button>
+        {viewing && <PhotoViewer file={{ ...file, url: src }} time={time} onClose={() => setViewing(false)} />}
+      </>
     );
   }
-  if (file.kind === 'video') return <video className="media" src={file.url} controls preload="metadata" onError={() => setFailed(true)} />;
-  if (file.kind === 'audio') return <audio className="audio" src={file.url} controls preload="metadata" onError={() => setFailed(true)} />;
-  return (
-    <a className="doc" href={file.url} target="_blank" rel="noopener noreferrer">
-      <IconDownload size={18} /> {label}
-    </a>
-  );
+  if (file.kind === 'video') return <video className="media-video" src={src} controls preload="metadata" onError={() => setFailed(true)} />;
+  return <audio className="audio" src={src} controls preload="metadata" onError={() => setFailed(true)} />;
 }
 
 export function Bubble({ text, mediaId, file, direction = 'out', time, label, status }: {
@@ -76,7 +198,7 @@ export function Bubble({ text, mediaId, file, direction = 'out', time, label, st
 }) {
   const media = useMedia(mediaId);
   return (
-    <div className={`bubble ${direction}`}>
+    <div className={`bubble ${direction} ${file?.sticker && !text ? 'sticker' : ''}`}>
       {label && <span className="source">{label}</span>}
       {media?.kind === 'image' && <img className="media" src={`/api/media/${media.id}/file`} alt="" />}
       {media && media.kind !== 'image' && (
@@ -84,7 +206,7 @@ export function Bubble({ text, mediaId, file, direction = 'out', time, label, st
           <IconFile size={18} /> {media.filename}
         </div>
       )}
-      {file && <ChatFileView file={file} />}
+      {file && <ChatFileView file={file} time={time} />}
       {text && <WhatsAppText text={text} />}
       <span className="meta">
         {time}

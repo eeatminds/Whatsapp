@@ -805,35 +805,29 @@ export class ContactsService {
   }
 
   /**
-   * The contact for a WhatsApp chat copied into the Inbox (a message typed on the phone, or chat
-   * history). Someone new is kept for the Inbox only, never added to Contacts or campaigns.
+   * The contact for a message typed on the phone itself. Someone new is kept for the Inbox only,
+   * never added to Contacts or campaigns.
    */
-  forChat(phone: string, chatId: string, name: string | null, lastInboundAt: string | null = null): ContactRow {
+  forChat(phone: string, chatId: string, name: string | null): ContactRow {
     const existing = this.findByPhone(phone);
     const now = this.now();
     // Messages are sent to the number's own chat, never to a privacy id (@lid) that hides it.
     chatId = phoneFromChatId(chatId) ? chatId : chatIdFor(phone);
     if (existing) {
       this.core.db.run(
-        `UPDATE contacts SET wa_status = 'valid', wa_chat_id = COALESCE(wa_chat_id, ?), name = COALESCE(name, ?),
-                last_inbound_at = CASE WHEN ? IS NOT NULL AND (last_inbound_at IS NULL OR last_inbound_at < ?) THEN ? ELSE last_inbound_at END
-          WHERE id = ?`,
+        "UPDATE contacts SET wa_status = 'valid', wa_chat_id = COALESCE(wa_chat_id, ?), name = COALESCE(name, ?) WHERE id = ?",
         chatId,
         name,
-        lastInboundAt,
-        lastInboundAt,
-        lastInboundAt,
         existing.id,
       );
       return this.row(existing.id);
     }
     const id = this.core.db.run(
-      `INSERT INTO contacts (phone, name, wa_status, wa_chat_id, source, last_inbound_at, saved, created_at, updated_at)
-       VALUES (?, ?, 'valid', ?, 'whatsapp', ?, 0, ?, ?)`,
+      `INSERT INTO contacts (phone, name, wa_status, wa_chat_id, source, saved, created_at, updated_at)
+       VALUES (?, ?, 'valid', ?, 'whatsapp', 0, ?, ?)`,
       phone,
       name,
       chatId,
-      lastInboundAt,
       now,
       now,
     ).lastInsertRowid;

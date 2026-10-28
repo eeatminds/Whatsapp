@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { createTestEnv, inbound, type TestEnv } from './helpers.js';
 
 let env: TestEnv | undefined;
@@ -30,7 +32,7 @@ function waMessage(chat: string, id: string, body: string, options: { fromMe?: b
   };
 }
 
-describe('Inbox: a copy of WhatsApp', () => {
+describe('Inbox: every message from the moment a number is linked', () => {
   it('keeps messages typed on the phone, without adding contacts or triggering automations', async () => {
     env = await createTestEnv({ saveUnknownSenders: false });
     env.s.autoReplies.create({ name: 'Any', matchType: 'any', keywords: [], replyBody: 'Thanks!', active: true, priority: 900 });
@@ -99,101 +101,34 @@ describe('Inbox: a copy of WhatsApp', () => {
     expect(env.core.db.get<{ source_type: string }>('SELECT source_type FROM messages WHERE wa_message_id = ?', echo.id)!.source_type).toBe('campaign');
   });
 
-  it('copies the chats already on the phone once, oldest to newest, with unread counts as on the phone', async () => {
-    env = await createTestEnv({ saveUnknownSenders: false });
-    env.s.autoReplies.create({ name: 'Any', matchType: 'any', keywords: [], replyBody: 'Thanks!', active: true, priority: 900 });
-    const known = await env.api('POST', '/api/contacts', { phone: '+91 98123 00012', name: 'Ravi (customer)' });
-    const asha = '919812300011@c.us';
-    const ravi = '919812300012@c.us';
-    env.fake.chats.set(env.sessionId, [
-      { id: ravi, name: 'Ravi', kind: 'individual', unreadCount: 0, timestamp: seconds('2026-09-24T10:00:00Z') },
-      { id: asha, name: 'Asha Sharma', kind: 'individual', unreadCount: 1, timestamp: seconds('2026-09-20T10:00:00Z') },
-      { id: '1203630@g.us', name: 'Family', isGroup: true, kind: 'group' },
-      { id: 'status@broadcast', name: 'Status', kind: 'status' },
-    ]);
-    env.fake.history.set(asha, [
-      waMessage(asha, 'a1', 'Hello, do you deliver?', { at: '2026-09-20T09:00:00Z' }),
-      waMessage(asha, 'a2', 'Yes, everywhere in Pune', { fromMe: true, at: '2026-09-20T09:05:00Z' }),
-      waMessage(asha, 'a3', '', { at: '2026-09-20T09:06:00Z', type: 'unknown' }),
-      waMessage(asha, 'a4', '', { at: '2026-09-20T09:07:00Z', type: 'image' }),
-      waMessage(asha, 'a5', 'ZmFrZS1tYXAtcGljdHVyZQ'.repeat(20), {
-        at: '2026-09-20T10:00:00Z',
-        type: 'location',
-        extra: { location: { latitude: 18.52, longitude: 73.85, description: 'Shop', address: 'FC Road' } },
-      }),
-    ]);
-    env.fake.history.set(ravi, [waMessage(ravi, 'r1', 'Order received?', { at: '2026-09-24T10:00:00Z' })]);
-    env.fake.history.set('1203630@g.us', [waMessage('1203630@g.us', 'g1', 'family stuff', { at: '2026-09-24T11:00:00Z' })]);
-
-    await env.run(1);
-    await env.s.history.idle();
-
-    const status = await env.api('GET', '/api/inbox/sync');
-    expect(status.body.numbers[0].sync).toMatchObject({ state: 'done', chatsTotal: 2, chatsDone: 2, messages: 5 });
-    const inbox = await env.api('GET', '/api/inbox');
-    expect(inbox.body.items.map((c: any) => [c.name, c.saved, c.unread, c.lastMessage])).toEqual([
-      ['Ravi (customer)', true, 0, 'Order received?'],
-      ['Asha Sharma', false, 1, 'Shop, FC Road\nhttps://maps.google.com/?q=18.52,73.85'],
-    ]);
-    // Only the last unread message is unread, as on the phone; copying triggers nothing.
-    expect(inbox.body.unread).toBe(1);
-    expect(count('SELECT COUNT(*) AS n FROM outbox')).toBe(0);
-    expect(count("SELECT COUNT(*) AS n FROM messages WHERE body = 'family stuff'")).toBe(0);
-    expect((await env.api('GET', '/api/contacts')).body.total).toBe(1);
-    expect(count('SELECT COUNT(*) AS n FROM messages WHERE contact_id = ?', known.body.contact.id)).toBe(1);
-
-    const ashaId = inbox.body.items[1].contactId;
-    const thread = (await env.api('GET', `/api/inbox/${ashaId}`)).body;
-    expect(thread.messages.map((m: any) => [m.direction, m.type, m.sourceType])).toEqual([
-      ['in', 'text', 'inbound'],
-      ['out', 'text', 'phone'],
-      ['in', 'image', 'inbound'],
-      ['in', 'location', 'inbound'],
-    ]);
-    expect(thread.messages[2].file).toMatchObject({ kind: 'image' });
-    expect(thread).toMatchObject({ hasOlder: false, canReadPhone: true });
-
-    // Live messages after the copy sort after it; later ticks don't copy again.
-    await env.webhook('message.received', { ...inbound('919812300011', 'Can I order now?'), timestamp: seconds(env.clock.now().toISOString()) });
-    env.fake.history.set(asha, [waMessage(asha, 'a9', 'not copied twice', { at: '2026-09-20T08:00:00Z' })]);
-    await env.run(2);
-    await env.s.history.idle();
-    expect(count("SELECT COUNT(*) AS n FROM messages WHERE wa_message_id = 'a9'")).toBe(0);
-    expect((await env.api('GET', '/api/inbox')).body.items[0]).toMatchObject({ name: 'Asha Sharma', lastMessage: 'Can I order now?' });
-
-    // "Sync chats from WhatsApp" copies again; messages already there are skipped.
-    const again = await env.api('POST', '/api/inbox/sync', {});
-    expect(again.status).toBe(200);
-    await env.s.history.idle();
-    expect(count("SELECT COUNT(*) AS n FROM messages WHERE wa_message_id = 'a9'")).toBe(1);
-    expect(count("SELECT COUNT(*) AS n FROM messages WHERE wa_message_id = 'a1'")).toBe(1);
-  });
-
-  it('loads earlier messages of a chat from the phone', async () => {
+  it('starts from the moment a number is linked: old chats an earlier version copied in are removed', async () => {
     env = await createTestEnv();
-    const chat = '919812300013@c.us';
-    env.fake.chats.set(env.sessionId, [{ id: chat, name: 'Meera', kind: 'individual' }]);
-    const start = new Date('2026-06-01T00:00:00Z').getTime();
-    env.fake.history.set(
-      chat,
-      Array.from({ length: 250 }, (_, i) => waMessage(chat, `m${i}`, `message ${i}`, { fromMe: i % 2 === 1, at: new Date(start + i * 60_000).toISOString() })),
-    );
-    await env.run(1);
-    await env.s.history.idle();
-    const id = (await env.api('GET', '/api/inbox')).body.items[0].contactId;
-    expect(count('SELECT COUNT(*) AS n FROM messages WHERE contact_id = ?', id)).toBe(100);
+    const db = env.core.db;
+    const linked = db.get<{ created_at: string }>('SELECT created_at FROM owned_sessions WHERE session_id = ?', env.sessionId)!.created_at;
+    // A customer who wrote after the number was linked, and a reply from the phone.
+    env.clock.advance(60_000);
+    await env.webhook('message.received', inbound('919812300018', 'Hi, is the shop open today?', 'live1'));
+    await env.webhook('message.sent', waMessage('919812300018@c.us', 'live2', 'Yes, till 9pm', { fromMe: true, at: env.clock.now().toISOString() }));
+    const customer = env.core.db.get<{ id: number }>("SELECT id FROM contacts WHERE phone = '919812300018'")!.id;
+    // What the earlier version copied from the phone: messages from before the number was linked,
+    // with a downloaded photo, and someone who was only in the Inbox because of them.
+    const old = new Date(new Date(linked).getTime() - 30 * 86_400_000).toISOString();
+    const stranger = env.s.contacts.forChat('919812300019', '919812300019@c.us', 'Old friend').id;
+    env.s.messages.recordCopy({ contactId: stranger, sessionId: env.sessionId, chatId: '919812300019@c.us', direction: 'in', waMessageId: 'old1', type: 'image', body: null, at: old, seen: true });
+    env.s.messages.recordCopy({ contactId: customer, sessionId: env.sessionId, chatId: '919812300018@c.us', direction: 'out', waMessageId: 'old2', type: 'text', body: 'last month', at: old, seen: true });
+    const photo = db.get<{ id: number }>("SELECT id FROM messages WHERE wa_message_id = 'old1'")!.id;
+    const folder = join(dirname(env.config.mediaDir), 'chat-media');
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, `m${photo}`), 'x');
+    db.run("UPDATE messages SET media_file = ? WHERE id = ?", `m${photo}`, photo);
+    db.run("INSERT INTO history_syncs (session_id, state, started_at) VALUES (?, 'done', ?)", env.sessionId, linked);
 
-    const first = await env.api('GET', `/api/inbox/${id}?limit=60`);
-    expect(first.body.messages).toHaveLength(60);
-    expect(first.body.messages[59].body).toBe('message 249');
-    expect(first.body.hasOlder).toBe(true);
-
-    const earlier = await env.api('POST', `/api/inbox/${id}/earlier`, {});
-    expect(earlier.body).toEqual({ added: 150, more: false });
-    const all = await env.api('GET', `/api/inbox/${id}?limit=1000`);
-    expect(all.body.messages).toHaveLength(250);
-    expect(all.body.messages[0].body).toBe('message 0');
-    expect(all.body.hasOlder).toBe(false);
+    expect(env.s.chatMedia.removeCopiedHistory()).toEqual({ messages: 2, contacts: 1 });
+    expect(db.all<{ wa_message_id: string }>('SELECT wa_message_id FROM messages ORDER BY id').map(r => r.wa_message_id)).toEqual(['live1', 'live2']);
+    expect(db.get("SELECT 1 FROM contacts WHERE phone = '919812300019'")).toBeUndefined();
+    expect(existsSync(join(folder, `m${photo}`))).toBe(false);
+    // Once only.
+    expect(env.s.chatMedia.removeCopiedHistory()).toEqual({ messages: 0, contacts: 0 });
   });
 
   it('shows photos and files from WhatsApp safely', async () => {
@@ -227,5 +162,76 @@ describe('Inbox: a copy of WhatsApp', () => {
     expect((await env.app.inject({ method: 'GET', url: `/api/inbox/media/${messages[3].id}`, headers: { 'x-api-key': env.apiKey } })).statusCode).toBe(404);
     // Not signed in: no files.
     expect((await env.app.inject({ method: 'GET', url: `/api/inbox/media/${messages[0].id}` })).statusCode).toBe(401);
+  });
+
+  it('downloads photos and documents of new messages when a chat is opened, once, and keeps them', async () => {
+    env = await createTestEnv();
+    const phone = '919812300016';
+    const chat = `${phone}@c.us`;
+    const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').toString('base64');
+    const pdf = Buffer.from('%PDF-1.4 price list').toString('base64');
+    const live = async (id: string, type: string, body = '') => {
+      env!.clock.advance(60_000);
+      await env!.webhook('message.received', { ...inbound(phone, body, id), type, timestamp: seconds(env!.clock.now().toISOString()) });
+      return waMessage(chat, id, body, { at: env!.clock.now().toISOString(), type });
+    };
+    // On the phone: a photo far back (more than 100 messages ago), texts, then three files. The
+    // gateway kept none of them (too big, or its download failed), so they are read from the phone.
+    const phoneChat = [await live('old_photo', 'image')];
+    for (let i = 0; i < 120; i++) phoneChat.push(await live(`t${i}`, 'text', `text ${i}`));
+    phoneChat.push(await live('photo1', 'image', 'Our counter'), await live('doc1', 'document'), await live('gone1', 'image'));
+    env.fake.history.set(chat, phoneChat);
+    env.fake.phoneMedia.set('photo1', { mimetype: 'image/png', base64: png });
+    env.fake.phoneMedia.set('doc1', { mimetype: 'application/pdf', base64: pdf, filename: 'Price list Oct.pdf' });
+    env.fake.phoneMedia.set('old_photo', { mimetype: 'image/png', base64: png });
+    const id = (await env.api('GET', '/api/inbox')).body.items[0].contactId;
+    const byWa = (wa: string) => env!.core.db.get<{ id: number }>('SELECT id FROM messages WHERE wa_message_id = ?', wa)!.id;
+    const before = (await env.api('GET', `/api/inbox/${id}?limit=1000`)).body.messages;
+    expect(before.find((m: any) => m.id === byWa('photo1')).file).toMatchObject({ kind: 'image', ready: false, missing: false });
+
+    // Opening the chat downloads its files in one read of the phone (last messages, with files).
+    expect((await env.api('POST', `/api/inbox/${id}/media`, {})).body.downloading).toBe(4);
+    await env.s.chatMedia.idle();
+    expect(env.fake.historyCalls).toEqual([{ chatId: chat, limit: 13, includeMedia: true }]);
+    const after = (await env.api('GET', `/api/inbox/${id}?limit=1000`)).body.messages;
+    const fileOf = (wa: string) => after.find((m: any) => m.id === byWa(wa)).file;
+    expect(fileOf('photo1')).toMatchObject({ ready: true, missing: false, mimetype: 'image/png', size: 16 });
+    expect(fileOf('doc1')).toMatchObject({ kind: 'document', ready: true, name: 'Price list Oct.pdf', mimetype: 'application/pdf' });
+    // Deleted from the phone, or too far back for WhatsApp to send (more than 100 messages ago).
+    expect(fileOf('gone1')).toMatchObject({ ready: false, missing: true });
+    expect(fileOf('old_photo')).toMatchObject({ ready: false, missing: true });
+    // Reading the phone never adds its other messages to the Inbox.
+    expect(env.core.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM messages')!.n).toBe(124);
+
+    // Served from this server from now on, without asking the phone again.
+    env.fake.historyCalls.length = 0;
+    const photo = await env.app.inject({ method: 'GET', url: `/api/inbox/media/${byWa('photo1')}`, headers: { 'x-api-key': env.apiKey } });
+    expect(photo.statusCode).toBe(200);
+    expect(photo.headers['content-type']).toBe('image/png');
+    expect(photo.rawPayload.toString('base64')).toBe(png);
+    const doc = await env.app.inject({ method: 'GET', url: `/api/inbox/media/${byWa('doc1')}`, headers: { 'x-api-key': env.apiKey } });
+    expect(doc.headers['content-type']).toBe('application/octet-stream');
+    expect(doc.headers['content-disposition']).toContain("filename*=UTF-8''Price%20list%20Oct.pdf");
+    const download = await env.app.inject({ method: 'GET', url: `/api/inbox/media/${byWa('photo1')}?download=1`, headers: { 'x-api-key': env.apiKey } });
+    expect(download.headers['content-disposition']).toMatch(/^attachment/);
+    const gone = await env.app.inject({ method: 'GET', url: `/api/inbox/media/${byWa('gone1')}`, headers: { 'x-api-key': env.apiKey } });
+    expect(gone.statusCode).toBe(404);
+    expect(env.fake.historyCalls).toEqual([]);
+
+    // "Try again" asks the phone once more.
+    env.fake.phoneMedia.set('gone1', { mimetype: 'image/png', base64: png });
+    const retried = await env.app.inject({ method: 'GET', url: `/api/inbox/media/${byWa('gone1')}?retry=1`, headers: { 'x-api-key': env.apiKey } });
+    expect(retried.statusCode).toBe(200);
+  });
+
+  it("keeps trying while WhatsApp can't be reached", async () => {
+    env = await createTestEnv();
+    await env.webhook('message.received', { ...inbound('919812300017', '', 'img_down'), type: 'image', body: '', media: { mimetype: 'image/jpeg', sizeBytes: 52_000 } });
+    const id = env.core.db.get<{ id: number }>("SELECT id FROM messages WHERE wa_message_id = 'img_down'")!.id;
+    expect(env.s.messages.thread(env.s.messages.byId(id)!.contact_id!).messages[0].file).toMatchObject({ size: 52_000, mimetype: 'image/jpeg' });
+    await env.fake.close();
+    const res = await env.app.inject({ method: 'GET', url: `/api/inbox/media/${id}`, headers: { 'x-api-key': env.apiKey } });
+    expect(res.statusCode).toBe(503);
+    expect(env.s.messages.byId(id)!.media_missing).toBe(0);
   });
 });
