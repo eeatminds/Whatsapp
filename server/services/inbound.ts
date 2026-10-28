@@ -11,7 +11,7 @@ import type { OutboxService } from './outbox.js';
 import type { SessionsService } from './sessions.js';
 import type { Bus } from './bus.js';
 import type { SessionStatus } from '../openwa/client.js';
-import type { OfficialNumbersService } from './official.js';
+import type { OfficialNumbersService, TemplateStatusEvent } from './official.js';
 import { metaErrorText } from '../meta/client.js';
 
 /** The parts of Meta's Cloud API webhook we use (object "whatsapp_business_account"). */
@@ -287,7 +287,7 @@ export class InboundService {
       for (const change of Array.isArray(entry?.changes) ? entry.changes : []) {
         const value = change?.value ?? {};
         if (change?.field === 'message_template_status_update') {
-          this.official.applyTemplateStatus(String(entry.id ?? ''), value.message_template_name, value.message_template_language, value.event);
+          this.official.applyTemplateStatus(String(entry.id ?? ''), value as TemplateStatusEvent);
           continue;
         }
         if (change?.field !== 'messages') continue;

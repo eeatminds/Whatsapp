@@ -7,6 +7,17 @@ import { SecretBox } from '../lib/secret-box.js';
 import { chatIdFor, phoneFromChatId } from '../lib/phone.js';
 import { MetaError, type MetaTemplate, type MetaTemplateComponent } from '../meta/client.js';
 import { buildTemplateComponents, describeTemplate, type TemplateShape } from '../meta/templates.js';
+import {
+  TEMPLATE_LANGUAGES,
+  blankLabel,
+  buildDraft,
+  checkDraft,
+  draftFromTemplate,
+  draftSchema,
+  suggestedValue,
+  type Problem,
+  type TemplateDraft,
+} from '../meta/template-builder.js';
 import type { OpenWASession } from '../openwa/client.js';
 import type { MediaService } from './media.js';
 import type { OutgoingContent, SentMessage } from './sender.js';
@@ -86,6 +97,19 @@ export const templateChoiceSchema = z.object({
   /** Slot key → text with {{variables}}, e.g. { "body:1": "{{first_name|there}}" }. */
   params: z.record(z.string().max(80), z.string().max(1000)).default({}),
   headerMediaId: z.coerce.number().int().positive().nullish(),
+  /** Carousel templates: a photo or video for each card, in order. */
+  cardMediaIds: z.array(z.coerce.number().int().positive().nullable()).max(10).default([]),
+  /** Templates with a map header: the place to show. */
+  location: z
+    .object({
+      latitude: z.coerce.number().min(-90).max(90),
+      longitude: z.coerce.number().min(-180).max(180),
+      name: z.string().trim().max(100).nullish(),
+      address: z.string().trim().max(200).nullish(),
+    })
+    .nullish(),
+  /** Limited-time offers with a countdown: when the offer ends. */
+  offerExpiresAt: z.string().datetime({ offset: true }).nullish(),
 });
 export type TemplateChoice = z.infer<typeof templateChoiceSchema>;
 
@@ -117,7 +141,28 @@ interface TemplateRow {
   category: string | null;
   components: string;
   synced_at: string;
+  draft: string | null;
+  labels: string;
+  rejected_reason: string | null;
+  status_note: string | null;
+  quality: string | null;
+  updated_at: string | null;
 }
+
+/** A template status change from Meta's message_template_status_update webhook. */
+export interface TemplateStatusEvent {
+  event?: string;
+  message_template_id?: number | string;
+  message_template_name?: string;
+  message_template_language?: string;
+  reason?: string | null;
+  rejection_info?: { reason?: string; recommendation?: string };
+  other_info?: { title?: string; description?: string };
+}
+
+/** Statuses a template can be edited in (Meta's rule), plus drafts kept in WA Reach. */
+const EDITABLE = new Set(['DRAFT', 'APPROVED', 'REJECTED', 'PAUSED']);
+const REVIEWING = new Set(['PENDING', 'IN_APPEAL']);
 
 export interface OfficialInfo {
   phoneNumberId: string;
@@ -130,10 +175,21 @@ export interface OfficialInfo {
 export type OfficialSession = OpenWASession & { channel: 'official'; official: OfficialInfo };
 
 export interface OfficialTemplate extends TemplateShape {
+  /** WA Reach's id for the template (for editing). */
+  id: number;
   name: string;
   language: string;
   status: string;
   category: string | null;
+  /** Why Meta rejected it (e.g. INVALID_FORMAT), and Meta's explanation or advice. */
+  rejectedReason: string | null;
+  statusNote: string | null;
+  /** Meta's quality rating once sent: GREEN, YELLOW, RED or UNKNOWN. */
+  quality: string | null;
+  /** Made (or last edited) in WA Reach. */
+  madeHere: boolean;
+  canEdit: boolean;
+  updatedAt: string | null;
 }
 
 function digitsOnly(phone: string | null | undefined): string | null {
@@ -406,25 +462,225 @@ export class OfficialNumbersService {
     this.core.db.tx(() => {
       for (const t of templates) {
         if (!t?.name || !t.language) continue;
+        const status = (t.status ?? 'UNKNOWN').toUpperCase();
+        const rejected = status === 'REJECTED' && t.rejected_reason && t.rejected_reason !== 'NONE' ? t.rejected_reason : null;
         this.core.db.run(
-          `INSERT INTO official_templates (waba_id, meta_id, name, language, status, category, components, synced_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO official_templates (waba_id, meta_id, name, language, status, category, components, synced_at, rejected_reason, quality)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (waba_id, name, language) DO UPDATE SET meta_id = excluded.meta_id, status = excluded.status,
-             category = excluded.category, components = excluded.components, synced_at = excluded.synced_at`,
+             category = excluded.category, components = excluded.components, synced_at = excluded.synced_at,
+             rejected_reason = CASE WHEN excluded.status = 'REJECTED' THEN COALESCE(excluded.rejected_reason, official_templates.rejected_reason) END,
+             status_note = CASE WHEN excluded.status IN ('REJECTED', 'PAUSED', 'DISABLED') THEN official_templates.status_note END,
+             quality = excluded.quality`,
           row.waba_id,
           t.id ?? null,
           t.name,
           t.language,
-          (t.status ?? 'UNKNOWN').toUpperCase(),
+          status,
           t.category ?? null,
           JSON.stringify(t.components ?? []),
           now,
+          rejected,
+          t.quality_score?.score ?? null,
         );
       }
-      // Anything Meta no longer lists was deleted there.
-      this.core.db.run('DELETE FROM official_templates WHERE waba_id = ? AND synced_at <> ?', row.waba_id, now);
+      // Anything Meta no longer lists was deleted there (drafts only exist here).
+      this.core.db.run("DELETE FROM official_templates WHERE waba_id = ? AND synced_at <> ? AND status <> 'DRAFT'", row.waba_id, now);
     });
     return this.templates(id);
+  }
+
+  /** Templates waiting for Meta's review are checked again (in case a status webhook is missed). */
+  async refreshPending(): Promise<void> {
+    const numbers = this.core.db.all<{ id: string }>(
+      `SELECT DISTINCT n.id FROM official_numbers n JOIN official_templates t ON t.waba_id = n.waba_id
+        WHERE t.status IN ('PENDING', 'IN_APPEAL') AND n.status = 'ready'`,
+    );
+    for (const { id } of numbers) {
+      try {
+        await this.syncTemplates(id);
+      } catch (error) {
+        this.core.log.warn(`Checking template reviews for ${id} failed: ${messageOf(error)}`);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- making templates
+
+  /** Languages and what the template form needs to know about this server. */
+  templateOptions(): { languages: Array<{ code: string; name: string }>; trackingPrefix: string | null } {
+    return { languages: TEMPLATE_LANGUAGES.map(([code, name]) => ({ code, name })), trackingPrefix: this.trackingPrefix() };
+  }
+
+  private templateById(row: OfficialRow, templateId: number): TemplateRow {
+    const template = this.core.db.get<TemplateRow>('SELECT * FROM official_templates WHERE id = ? AND waba_id = ?', templateId, row.waba_id);
+    if (!template) throw notFound('Template');
+    return template;
+  }
+
+  private mediaFacts = (mediaId: number) => {
+    try {
+      const media = this.media.get(mediaId);
+      return { mimetype: media.mimetype, size: media.size, filename: media.filename };
+    } catch {
+      return null;
+    }
+  };
+
+  /** One template with the form to edit it (rebuilt from Meta's copy when it was made elsewhere). */
+  template(id: string, templateId: number): { template: OfficialTemplate; draft: TemplateDraft } {
+    const row = this.row(id);
+    const template = this.templateById(row, templateId);
+    const stored = template.draft ? draftSchema.safeParse(parseJson(template.draft, {})) : null;
+    const draft =
+      stored?.success
+        ? stored.data
+        : draftFromTemplate(
+            { name: template.name, language: template.language, category: template.category, components: parseJson<MetaTemplateComponent[]>(template.components, []) },
+            parseJson<Record<string, string>>(template.labels, {}),
+            this.trackingPrefix(),
+          );
+    return { template: this.toTemplate(template), draft };
+  }
+
+  /** Check a template form against Meta's rules (as the business types). */
+  checkTemplate(id: string, input: unknown, templateId?: number): Problem[] {
+    const row = this.row(id);
+    const draft = draftSchema.parse((input as { draft?: unknown } | null)?.draft ?? input);
+    const problems = checkDraft(draft, { trackingPrefix: this.trackingPrefix(), media: this.mediaFacts });
+    const clash = this.core.db.get<{ id: number; status: string }>(
+      'SELECT id, status FROM official_templates WHERE waba_id = ? AND name = ? AND language = ? AND id IS NOT ?',
+      row.waba_id,
+      draft.name,
+      draft.language,
+      templateId ?? null,
+    );
+    if (clash && draft.name) {
+      problems.unshift({ level: 'error', field: 'name', message: `You already have a template called ${draft.name} in this language. Choose another name, or edit that one` });
+    }
+    return problems;
+  }
+
+  /** Meta needs each example image, video or PDF uploaded first; this returns their handles. */
+  private async sampleHandles(row: OfficialRow, token: string, draft: TemplateDraft): Promise<Map<number, string>> {
+    const ids = new Set<number>();
+    if (['image', 'video', 'document'].includes(draft.header.type) && draft.header.mediaId) ids.add(draft.header.mediaId);
+    if (draft.format === 'carousel') for (const card of draft.cards) if (card.mediaId) ids.add(card.mediaId);
+    const handles = new Map<number, string>();
+    if (ids.size === 0) return handles;
+    const appId = await this.core.meta.appId(token);
+    for (const mediaId of ids) {
+      const media = this.media.get(mediaId);
+      const { data } = await this.media.read(mediaId);
+      handles.set(mediaId, await this.core.meta.uploadSample(token, appId, { data, mimetype: media.mimetype, filename: media.filename }));
+    }
+    return handles;
+  }
+
+  /**
+   * Save a template form: as a draft, or submitted to Meta for review (`submit`). Editing a
+   * template Meta already has sends the new version for review; Meta allows that for approved,
+   * rejected and paused templates (an approved one once a day, 10 times a month).
+   */
+  async saveTemplate(id: string, input: unknown, templateId?: number): Promise<OfficialTemplate> {
+    const row = this.row(id);
+    const body = z.object({ draft: draftSchema, submit: z.boolean().default(false) }).parse(input);
+    const draft = body.draft;
+    const existing = templateId ? this.templateById(row, templateId) : null;
+    if (existing && REVIEWING.has(existing.status)) throw conflict('Meta is reviewing this template. You can change it once the review is done.');
+    if (existing && !EDITABLE.has(existing.status)) {
+      throw conflict(`This template is ${existing.status.toLowerCase().replace(/_/g, ' ')} in Meta and can't be changed. Copy it into a new template instead.`);
+    }
+    const inMeta = existing && existing.status !== 'DRAFT' && existing.meta_id;
+    if (inMeta) {
+      // Meta keeps a template's name and language; an approved one also keeps its category.
+      draft.name = existing.name;
+      draft.language = existing.language;
+      if (existing.status === 'APPROVED' && existing.category) draft.category = existing.category.toUpperCase() === 'UTILITY' ? 'UTILITY' : 'MARKETING';
+    }
+    const problems = this.checkTemplate(id, draft, existing?.id);
+    const now = this.now();
+    const prefix = this.trackingPrefix();
+
+    if (!body.submit) {
+      if (inMeta) throw badRequest('Changes to a template Meta already has are sent for review: use “Submit for review”');
+      if (!draft.name) throw badRequest('Give the template a name');
+      const nameProblem = problems.find(p => p.level === 'error' && p.field === 'name');
+      if (nameProblem) throw badRequest(nameProblem.message);
+      // A draft's preview is built with stand-in example handles.
+      const preview = buildDraft(draft, () => 'draft', prefix);
+      const values = [draft.name, draft.language, draft.category, JSON.stringify(preview.payload.components), JSON.stringify(draft), JSON.stringify(preview.labels), now];
+      if (existing) {
+        this.core.db.run(
+          'UPDATE official_templates SET name = ?, language = ?, category = ?, components = ?, draft = ?, labels = ?, updated_at = ?, synced_at = ? WHERE id = ?',
+          ...values,
+          now,
+          existing.id,
+        );
+        return this.toTemplate(this.templateById(row, existing.id));
+      }
+      const created = this.core.db.run(
+        `INSERT INTO official_templates (waba_id, meta_id, name, language, category, components, draft, labels, updated_at, status, synced_at)
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?)`,
+        row.waba_id,
+        ...values,
+        now,
+      ).lastInsertRowid;
+      return this.toTemplate(this.templateById(row, created));
+    }
+
+    const errors = problems.filter(p => p.level === 'error');
+    if (errors.length) throw badRequest(errors[0].message, { problems });
+    const token = this.token(row);
+    return this.guard(row, async () => {
+      const handles = await this.sampleHandles(row, token, draft);
+      const built = buildDraft(draft, mediaId => handles.get(mediaId)!, prefix);
+      let metaId: string;
+      let status: string;
+      let category: string = draft.category;
+      if (inMeta) {
+        const changes: Record<string, unknown> = { components: built.payload.components };
+        if (existing.status !== 'APPROVED') changes.category = draft.category;
+        await this.core.meta.editTemplate(token, existing.meta_id!, changes);
+        metaId = existing.meta_id!;
+        status = 'PENDING';
+        category = existing.status === 'APPROVED' ? (existing.category ?? draft.category) : draft.category;
+      } else {
+        const created = await this.core.meta.createTemplate(token, row.waba_id, built.payload);
+        metaId = created.id;
+        status = created.status;
+        category = (created.category ?? draft.category).toUpperCase();
+      }
+      const values = [metaId, draft.name, draft.language, status, category, JSON.stringify(built.payload.components), JSON.stringify(draft), JSON.stringify(built.labels), now, now];
+      if (existing) {
+        this.core.db.run(
+          `UPDATE official_templates SET meta_id = ?, name = ?, language = ?, status = ?, category = ?, components = ?, draft = ?, labels = ?,
+                  updated_at = ?, synced_at = ?, rejected_reason = NULL, status_note = NULL WHERE id = ?`,
+          ...values,
+          existing.id,
+        );
+        return this.toTemplate(this.templateById(row, existing.id));
+      }
+      const created = this.core.db.run(
+        `INSERT INTO official_templates (waba_id, meta_id, name, language, status, category, components, draft, labels, updated_at, synced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        row.waba_id,
+        ...values,
+      ).lastInsertRowid;
+      return this.toTemplate(this.templateById(row, created));
+    });
+  }
+
+  /** Delete a draft, or one language of a template in Meta (its name can't be reused for 30 days once approved). */
+  async deleteTemplate(id: string, templateId: number): Promise<void> {
+    const row = this.row(id);
+    const template = this.templateById(row, templateId);
+    if (template.status === 'DISABLED') throw conflict("Meta doesn't allow deleting a disabled template");
+    if (template.status !== 'DRAFT') {
+      const token = this.token(row);
+      await this.guard(row, () => this.core.meta.deleteTemplate(token, row.waba_id, template.name, template.meta_id));
+    }
+    this.core.db.run('DELETE FROM official_templates WHERE id = ?', template.id);
   }
 
   /** Button URLs starting with this prefix go through our click-tracking redirect. */
@@ -435,17 +691,39 @@ export class OfficialNumbersService {
   private toTemplate(row: TemplateRow): OfficialTemplate {
     const shape = describeTemplate(parseJson<MetaTemplateComponent[]>(row.components, []), row.category);
     const prefix = this.trackingPrefix();
-    if (prefix) {
-      for (const slot of shape.slots) {
-        const [part, index, kind] = slot.key.split(':');
-        const url = part === 'button' && kind === '1' ? shape.buttons[Number(index)]?.url : undefined;
-        if (url && url.startsWith(prefix)) {
-          slot.tracked = true;
-          slot.hint = 'Where the button should open. Every tap is counted in the campaign report.';
-        }
+    const labels = parseJson<Record<string, string>>(row.labels, {});
+    for (const slot of shape.slots) {
+      const parts = slot.key.split(':');
+      const card = parts[0] === 'card' ? Number(parts[1]) : null;
+      const [part, index, kind] = card === null ? parts : parts.slice(2);
+      const buttons = card === null ? shape.buttons : (shape.cards[card]?.buttons ?? []);
+      const url = part === 'button' && kind === '1' ? buttons[Number(index)]?.url : undefined;
+      if (prefix && url && url.startsWith(prefix)) {
+        slot.tracked = true;
+        slot.hint = 'Where the button should open. Every tap is counted in the campaign report.';
+      }
+      // Blanks named in WA Reach's template form: a readable label and a sensible default.
+      const name = labels[slot.key];
+      if (name) {
+        slot.name = name;
+        slot.label = `${blankLabel(name)}${card === null ? '' : ` (card ${card + 1})`}`;
+        slot.suggested = suggestedValue(name);
       }
     }
-    return { name: row.name, language: row.language, status: row.status, category: row.category, ...shape };
+    return {
+      id: row.id,
+      name: row.name,
+      language: row.language,
+      status: row.status,
+      category: row.category,
+      rejectedReason: row.rejected_reason,
+      statusNote: row.status_note,
+      quality: row.quality,
+      madeHere: !!row.draft,
+      canEdit: EDITABLE.has(row.status),
+      updatedAt: row.updated_at ?? row.synced_at,
+      ...shape,
+    };
   }
 
   /** Slot keys of a choice's link buttons that go through click tracking. */
@@ -458,20 +736,53 @@ export class OfficialNumbersService {
     const row = this.row(id);
     return this.core.db
       .all<TemplateRow>(
-        "SELECT * FROM official_templates WHERE waba_id = ? ORDER BY status = 'APPROVED' DESC, name COLLATE NOCASE, language",
+        "SELECT * FROM official_templates WHERE waba_id = ? ORDER BY status = 'APPROVED' DESC, COALESCE(updated_at, synced_at) DESC, name COLLATE NOCASE, language",
         row.waba_id,
       )
       .map(t => this.toTemplate(t));
   }
 
-  applyTemplateStatus(wabaId: string, name: unknown, language: unknown, status: unknown): void {
-    if (typeof name !== 'string' || typeof language !== 'string' || typeof status !== 'string') return;
+  /**
+   * Meta reports a template review result or a later change (paused, disabled...). Templates are
+   * matched by id, else by name and language (the webhook writes "en-US" where the API says "en_US").
+   */
+  applyTemplateStatus(wabaId: string, value: TemplateStatusEvent): void {
+    const event = typeof value?.event === 'string' ? value.event.toUpperCase() : '';
+    if (!event) return;
+    const byId = value.message_template_id !== undefined && value.message_template_id !== null ? String(value.message_template_id) : null;
+    const language = typeof value.message_template_language === 'string' ? value.message_template_language.replace('-', '_') : null;
+    const template =
+      (byId && this.core.db.get<TemplateRow>('SELECT * FROM official_templates WHERE waba_id = ? AND meta_id = ?', wabaId, byId)) ||
+      (typeof value.message_template_name === 'string' && language
+        ? this.core.db.get<TemplateRow>('SELECT * FROM official_templates WHERE waba_id = ? AND name = ? AND language = ?', wabaId, value.message_template_name, language)
+        : undefined);
+    if (!template) return;
+    const note = [value.rejection_info?.reason, value.rejection_info?.recommendation, value.other_info?.description]
+      .filter((s): s is string => typeof s === 'string' && !!s.trim())
+      .join(' ')
+      .slice(0, 1000);
+    const now = this.now();
+    if (event === 'DELETED') {
+      this.core.db.run('DELETE FROM official_templates WHERE id = ?', template.id);
+      return;
+    }
+    if (event === 'FLAGGED') {
+      this.core.db.run("UPDATE official_templates SET quality = 'RED', status_note = ?, updated_at = ? WHERE id = ?", note || 'Customers reported this template; Meta may pause it.', now, template.id);
+      return;
+    }
+    const status = event === 'REINSTATED' || event === 'UNARCHIVED' ? 'APPROVED' : event;
+    if (!['APPROVED', 'REJECTED', 'PENDING', 'PAUSED', 'DISABLED', 'IN_APPEAL', 'ARCHIVED', 'PENDING_DELETION'].includes(status)) {
+      if (note) this.core.db.run('UPDATE official_templates SET status_note = ?, updated_at = ? WHERE id = ?', note, now, template.id);
+      return;
+    }
+    const reason = status === 'REJECTED' && typeof value.reason === 'string' && value.reason !== 'NONE' ? value.reason.slice(0, 40) : null;
     this.core.db.run(
-      'UPDATE official_templates SET status = ? WHERE waba_id = ? AND name = ? AND language = ?',
-      status.toUpperCase().slice(0, 40),
-      wabaId,
-      name,
-      language,
+      'UPDATE official_templates SET status = ?, rejected_reason = ?, status_note = ?, updated_at = ? WHERE id = ?',
+      status,
+      reason,
+      note || null,
+      now,
+      template.id,
     );
   }
 
@@ -495,6 +806,14 @@ export class OfficialNumbersService {
     if (['IMAGE', 'VIDEO', 'DOCUMENT'].includes(shape.headerFormat) && !choice.headerMediaId) {
       return `Template “${choice.name}” needs a header ${shape.headerFormat.toLowerCase()}. Choose one.`;
     }
+    if (shape.headerFormat === 'LOCATION' && !choice.location) return `Template “${choice.name}” shows a map: choose the location to show`;
+    if (shape.offer?.hasExpiration) {
+      const ends = choice.offerExpiresAt ? new Date(choice.offerExpiresAt).getTime() : NaN;
+      if (!Number.isFinite(ends)) return `Template “${choice.name}” is a limited-time offer: choose when the offer ends`;
+      if (ends <= this.core.clock().getTime()) return 'The offer end time has already passed. Choose a later time';
+    }
+    const missingCard = shape.cards.findIndex((_card, i) => !choice.cardMediaIds?.[i]);
+    if (missingCard >= 0) return `Choose a ${shape.cards[missingCard].headerFormat.toLowerCase()} for card ${missingCard + 1} of template “${choice.name}”`;
     const empty = shape.slots.find(slot => !(choice.params[slot.key] ?? '').trim());
     if (empty) return `Fill in ${empty.label} for template “${choice.name}”`;
     const badLink = shape.slots.find(slot => slot.tracked && !/^https?:\/\/\S+$/i.test((choice.params[slot.key] ?? '').trim()));
@@ -605,7 +924,19 @@ export class OfficialNumbersService {
         }
         headerMedia = { kind: uploaded.kind as 'image' | 'video' | 'document', id: uploaded.id, filename: uploaded.filename };
       }
-      const built = buildTemplateComponents(template, value, headerMedia);
+      const cardMedia: Array<{ kind: 'image' | 'video'; id: string }> = [];
+      for (const [i, card] of template.cards.entries()) {
+        const uploaded = await this.upload(row, token, choice.cardMediaIds?.[i] ?? 0);
+        if (uploaded.kind !== card.headerFormat.toLowerCase()) {
+          throw new MetaError(400, `Card ${i + 1} of template “${choice.name}” needs ${card.headerFormat === 'VIDEO' ? 'a video' : 'a photo'}`, 132001);
+        }
+        cardMedia.push({ kind: uploaded.kind as 'image' | 'video', id: uploaded.id });
+      }
+      const built = buildTemplateComponents(template, value, headerMedia, {
+        location: choice.location ?? null,
+        offerExpiresAt: choice.offerExpiresAt ? new Date(choice.offerExpiresAt).getTime() : null,
+        cardMedia,
+      });
       const result = await this.core.meta.send(token, row.phone_number_id, {
         to,
         type: 'template',

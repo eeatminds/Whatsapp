@@ -418,4 +418,14 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE messages ADD COLUMN media_file TEXT;
   ALTER TABLE messages ADD COLUMN media_missing INTEGER NOT NULL DEFAULT 0;
   `,
+  // 14: Meta templates made in WA Reach: the form they were made from (drafts too), the name of
+  // each blank, why Meta rejected or paused one, and its quality rating.
+  `
+  ALTER TABLE official_templates ADD COLUMN draft TEXT;
+  ALTER TABLE official_templates ADD COLUMN labels TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE official_templates ADD COLUMN rejected_reason TEXT;
+  ALTER TABLE official_templates ADD COLUMN status_note TEXT;
+  ALTER TABLE official_templates ADD COLUMN quality TEXT;
+  ALTER TABLE official_templates ADD COLUMN updated_at TEXT;
+  `,
 ];

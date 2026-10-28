@@ -42,7 +42,7 @@ export function createServices(core: Core, options: { random?: () => number; sco
   const chatMedia = new ChatMediaService(core, messages, sessions);
   const dispatcher = new Dispatcher(
     core,
-    { settings, sessions, campaigns, sequences, messages, outbox, contacts, sender, inbound, autoReplies, chatMedia },
+    { settings, sessions, campaigns, sequences, messages, outbox, contacts, sender, inbound, autoReplies, chatMedia, official },
     options.random,
   );
   const analytics = new AnalyticsService(core, settings, contacts, messages);

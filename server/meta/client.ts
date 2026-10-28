@@ -29,6 +29,11 @@ export interface MetaTemplateComponent {
   format?: string;
   text?: string;
   buttons?: MetaTemplateButton[];
+  /** Carousel templates: 2 to 10 cards, each with its own header, body and buttons. */
+  cards?: Array<{ components?: MetaTemplateComponent[] }>;
+  /** Limited-time offer templates. */
+  limited_time_offer?: { text?: string; has_expiration?: boolean };
+  example?: unknown;
 }
 
 export interface MetaTemplate {
@@ -38,6 +43,8 @@ export interface MetaTemplate {
   status: string;
   category?: string;
   components?: MetaTemplateComponent[];
+  rejected_reason?: string;
+  quality_score?: { score?: string };
 }
 
 /** Friendlier wording for the Cloud API errors businesses actually run into. */
@@ -126,6 +133,16 @@ export interface MetaApi {
   templates(token: string, wabaId: string): Promise<MetaTemplate[]>;
   send(token: string, phoneNumberId: string, message: Record<string, unknown>): Promise<{ messageId: string }>;
   uploadMedia(token: string, phoneNumberId: string, file: { data: Buffer; mimetype: string; filename: string }): Promise<string>;
+  /** Submit a new template for review. */
+  createTemplate(token: string, wabaId: string, template: Record<string, unknown>): Promise<{ id: string; status: string; category?: string }>;
+  /** Replace an existing template's components (and category, unless approved): it is reviewed again. */
+  editTemplate(token: string, templateId: string, changes: Record<string, unknown>): Promise<void>;
+  /** Delete one template (by its id) or every language of a name. */
+  deleteTemplate(token: string, wabaId: string, name: string, templateId?: string | null): Promise<void>;
+  /** The Meta app an access token belongs to (needed to upload template examples). */
+  appId(token: string): Promise<string>;
+  /** Upload an example image, video or PDF for a template header; returns the handle Meta reviews. */
+  uploadSample(token: string, appId: string, file: { data: Buffer; mimetype: string; filename: string }): Promise<string>;
 }
 
 const numericId = (value: string, label: string): string => {
@@ -167,11 +184,15 @@ export class MetaGraphClient implements MetaApi {
       data = {};
     }
     if (!response.ok) {
-      const error = (data as { error?: { message?: string; code?: number; error_data?: { details?: string } } }).error ?? {};
+      const error =
+        (data as { error?: { message?: string; code?: number; error_user_msg?: string; error_user_title?: string; error_data?: { details?: string } } }).error ?? {};
       const code = typeof error.code === 'number' ? error.code : undefined;
-      const detail = error.error_data?.details || error.message || response.statusText;
+      // Meta's own wording for the person (template problems especially) is clearer than the code.
+      const forPerson = [error.error_user_title, error.error_user_msg].filter(Boolean).join(': ');
+      const detail = forPerson || error.error_data?.details || error.message || response.statusText;
       const retryAfter = Number(response.headers.get('retry-after')) || undefined;
-      throw new MetaError(response.status, `${metaErrorText(code, detail)}${code !== undefined ? ` (Meta error ${code})` : ''}`, code, retryAfter);
+      const text = code === 100 && detail ? detail : metaErrorText(code, detail);
+      throw new MetaError(response.status, `${text}${code !== undefined ? ` (Meta error ${code})` : ''}`, code, retryAfter);
     }
     return data as T;
   }
@@ -188,7 +209,7 @@ export class MetaGraphClient implements MetaApi {
   async templates(token: string, wabaId: string): Promise<MetaTemplate[]> {
     const id = numericId(wabaId, 'WhatsApp Business Account ID');
     const out: MetaTemplate[] = [];
-    let url: string | null = `${this.base}/${id}/message_templates?fields=id,name,language,status,category,components&limit=100`;
+    let url: string | null = `${this.base}/${id}/message_templates?fields=id,name,language,status,category,components,rejected_reason,quality_score&limit=100`;
     for (let page = 0; url && page < 30; page++) {
       const result: { data?: MetaTemplate[]; paging?: { next?: string } } = await this.request(token, 'GET', url);
       out.push(...(result.data ?? []));
@@ -210,6 +231,58 @@ export class MetaGraphClient implements MetaApi {
     const messageId = result.messages?.[0]?.id;
     if (!messageId) throw new MetaError(502, 'Meta accepted the message but returned no message id');
     return { messageId };
+  }
+
+  async createTemplate(token: string, wabaId: string, template: Record<string, unknown>): Promise<{ id: string; status: string; category?: string }> {
+    const result = await this.request<{ id?: string; status?: string; category?: string }>(
+      token,
+      'POST',
+      `${this.base}/${numericId(wabaId, 'WhatsApp Business Account ID')}/message_templates`,
+      template,
+      60_000,
+    );
+    if (!result.id) throw new MetaError(502, 'Meta accepted the template but returned no id');
+    return { id: result.id, status: (result.status ?? 'PENDING').toUpperCase(), category: result.category };
+  }
+
+  async editTemplate(token: string, templateId: string, changes: Record<string, unknown>): Promise<void> {
+    await this.request(token, 'POST', `${this.base}/${numericId(templateId, 'Template ID')}`, changes, 60_000);
+  }
+
+  async deleteTemplate(token: string, wabaId: string, name: string, templateId?: string | null): Promise<void> {
+    if (!/^[a-z0-9_]{1,512}$/.test(name)) throw new MetaError(400, 'Template name is not valid');
+    const id = templateId ? `&hsm_id=${numericId(templateId, 'Template ID')}` : '';
+    await this.request(token, 'DELETE', `${this.base}/${numericId(wabaId, 'WhatsApp Business Account ID')}/message_templates?name=${name}${id}`);
+  }
+
+  async appId(token: string): Promise<string> {
+    const app = await this.request<{ id?: string }>(token, 'GET', `${this.base}/app?fields=id`);
+    if (!app.id || !/^\d{5,25}$/.test(app.id)) throw new MetaError(502, 'Meta did not say which app this access token belongs to');
+    return app.id;
+  }
+
+  async uploadSample(token: string, appId: string, file: { data: Buffer; mimetype: string; filename: string }): Promise<string> {
+    // Resumable Upload API: open an upload session for the app, then send the bytes to it.
+    const query = new URLSearchParams({ file_name: file.filename.slice(0, 200), file_length: String(file.data.length), file_type: file.mimetype });
+    const session = await this.request<{ id?: string }>(token, 'POST', `${this.base}/${numericId(appId, 'App ID')}/uploads?${query}`);
+    if (!session.id || !/^upload:[^\s/#]+$/.test(session.id)) throw new MetaError(502, 'Meta did not open an upload for the example file');
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.base}/${session.id}`, {
+        method: 'POST',
+        headers: { Authorization: `OAuth ${token}`, file_offset: '0', 'Content-Type': 'application/octet-stream' },
+        body: new Uint8Array(file.data),
+        signal: AbortSignal.timeout(180_000),
+      });
+    } catch (error) {
+      throw new MetaError(0, `Could not reach Meta: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const result = (await response.json().catch(() => ({}))) as { h?: string; error?: { message?: string; code?: number } };
+    if (!response.ok || !result.h) {
+      const code = typeof result.error?.code === 'number' ? result.error.code : undefined;
+      throw new MetaError(response.status || 502, `Uploading the example file to Meta failed: ${metaErrorText(code, result.error?.message ?? response.statusText)}`, code);
+    }
+    return result.h;
   }
 
   async uploadMedia(token: string, phoneNumberId: string, file: { data: Buffer; mimetype: string; filename: string }): Promise<string> {

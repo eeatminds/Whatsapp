@@ -8,6 +8,13 @@ export class FakeMeta implements MetaApi {
   readonly uploads: Array<{ phoneNumberId: string; filename: string; mimetype: string }> = [];
   /** Next send fails with this Meta error code. */
   failNext: { code: number; status?: number } | null = null;
+  /** Templates submitted for review, as Meta received them. */
+  readonly created: Array<{ wabaId: string; template: Record<string, any> }> = [];
+  readonly edits: Array<{ templateId: string; changes: Record<string, any> }> = [];
+  readonly deleted: Array<{ wabaId: string; name: string; templateId: string | null }> = [];
+  readonly samples: Array<{ appId: string; filename: string; mimetype: string; size: number }> = [];
+  /** Next template submission is refused with this message (Meta error 100). */
+  rejectNextTemplate: string | null = null;
   private counter = 0;
 
   addNumber(input: { id: string; wabaId: string; token: string; display?: string; name?: string }): void {
@@ -53,6 +60,57 @@ export class FakeMeta implements MetaApi {
     }
     this.sent.push({ phoneNumberId, message });
     return { messageId: `wamid.${++this.counter}` };
+  }
+
+  async createTemplate(token: string, wabaId: string, template: Record<string, any>): Promise<{ id: string; status: string; category?: string }> {
+    await this.subscribeApp(token, wabaId);
+    if (this.rejectNextTemplate) {
+      const message = this.rejectNextTemplate;
+      this.rejectNextTemplate = null;
+      throw new MetaError(400, `${message} (Meta error 100)`, 100);
+    }
+    const list = this.templatesByWaba.get(wabaId) ?? [];
+    if (list.some(t => t.name === template.name && t.language === template.language)) {
+      throw new MetaError(400, 'Content in This Language Already Exists (Meta error 100)', 100);
+    }
+    const id = String(9_000_000_000 + ++this.counter);
+    this.created.push({ wabaId, template });
+    list.push({ id, name: template.name, language: template.language, status: 'PENDING', category: String(template.category), components: template.components });
+    this.templatesByWaba.set(wabaId, list);
+    return { id, status: 'PENDING', category: String(template.category) };
+  }
+
+  async editTemplate(token: string, templateId: string, changes: Record<string, any>): Promise<void> {
+    const template = [...this.templatesByWaba.values()].flat().find(t => t.id === templateId);
+    if (!template) throw new MetaError(400, 'Template not found (Meta error 100)', 100);
+    this.edits.push({ templateId, changes });
+    template.components = changes.components ?? template.components;
+    template.status = 'PENDING';
+  }
+
+  async deleteTemplate(token: string, wabaId: string, name: string, templateId?: string | null): Promise<void> {
+    await this.subscribeApp(token, wabaId);
+    this.deleted.push({ wabaId, name, templateId: templateId ?? null });
+    const list = this.templatesByWaba.get(wabaId) ?? [];
+    this.templatesByWaba.set(wabaId, list.filter(t => !(t.name === name && (!templateId || t.id === templateId))));
+  }
+
+  async appId(token: string): Promise<string> {
+    if (![...this.numbers.values()].some(n => n.token === token)) throw new MetaError(401, 'The access token is invalid (Meta error 190)', 190);
+    return '777000111';
+  }
+
+  async uploadSample(token: string, appId: string, file: { data: Buffer; mimetype: string; filename: string }): Promise<string> {
+    this.samples.push({ appId, filename: file.filename, mimetype: file.mimetype, size: file.data.length });
+    return `4::sample-${this.samples.length}`;
+  }
+
+  /** Meta finishing a review: what its template list (and webhook) then says. */
+  review(wabaId: string, name: string, status: 'APPROVED' | 'REJECTED', rejectedReason?: string): void {
+    const template = (this.templatesByWaba.get(wabaId) ?? []).find(t => t.name === name);
+    if (!template) throw new Error(`No template ${name}`);
+    template.status = status;
+    template.rejected_reason = rejectedReason;
   }
 
   async uploadMedia(token: string, phoneNumberId: string, file: { data: Buffer; mimetype: string; filename: string }): Promise<string> {

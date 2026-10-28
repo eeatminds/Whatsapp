@@ -154,6 +154,31 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   app.post('/official/numbers/:id/sync-templates', async request => ({ items: await s.official.syncTemplates(params(sessionParam, request).id) }));
   app.get('/official/numbers/:id/templates', async request => ({ items: s.official.templates(params(sessionParam, request).id) }));
 
+  // Making Meta templates inside WA Reach: drafts, review, edits and status.
+  const templateParams = z.object({ id: z.string().min(1).max(100), templateId: z.coerce.number().int().positive() });
+  app.get('/official/template-options', async () => s.official.templateOptions());
+  app.post('/official/numbers/:id/templates/check', async request => {
+    const { id } = params(sessionParam, request);
+    const { templateId } = z.object({ templateId: z.coerce.number().int().positive().optional() }).parse(request.query);
+    return { problems: s.official.checkTemplate(id, request.body, templateId) };
+  });
+  app.post('/official/numbers/:id/templates', { bodyLimit: 256 * 1024 }, async (request, reply) =>
+    reply.status(201).send(await s.official.saveTemplate(params(sessionParam, request).id, request.body)),
+  );
+  app.get('/official/numbers/:id/templates/:templateId', async request => {
+    const { id, templateId } = templateParams.parse(request.params);
+    return s.official.template(id, templateId);
+  });
+  app.put('/official/numbers/:id/templates/:templateId', { bodyLimit: 256 * 1024 }, async request => {
+    const { id, templateId } = templateParams.parse(request.params);
+    return s.official.saveTemplate(id, request.body, templateId);
+  });
+  app.delete('/official/numbers/:id/templates/:templateId', async request => {
+    const { id, templateId } = templateParams.parse(request.params);
+    await s.official.deleteTemplate(id, templateId);
+    return { ok: true };
+  });
+
   // ---------------------------------------------------------------- lead sources (Google Sheets, website forms, Wix...)
 
   app.get('/lead-sources', async () => ({ items: s.leads.list(), available: !!core.config.leadHookUrl }));

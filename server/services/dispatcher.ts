@@ -9,6 +9,7 @@ import type { Campaign, CampaignsService, RecipientRow } from './campaigns.js';
 import type { SequencesService, EnrollmentRow } from './sequences.js';
 import type { MessagesService } from './messages.js';
 import type { ChatMediaService } from './chat-media.js';
+import type { OfficialNumbersService } from './official.js';
 import type { OutboxService, OutboxRow } from './outbox.js';
 import type { ContactsService, ContactRow } from './contacts.js';
 import type { Sender, SentMessage } from './sender.js';
@@ -29,6 +30,8 @@ export interface DispatcherDeps {
   autoReplies: AutoRepliesService;
   /** Downloads chat photos and documents in the background. */
   chatMedia?: ChatMediaService;
+  /** Checks Meta template reviews when a status webhook may have been missed. */
+  official?: OfficialNumbersService;
 }
 
 type SendOutcome = 'sent' | 'failed' | 'skipped' | 'transient' | 'empty';
@@ -189,6 +192,7 @@ export class Dispatcher {
     } catch (error) {
       this.core.log.warn(`Maintenance failed: ${String(error)}`);
     }
+    void this.deps.official?.refreshPending().catch(error => this.core.log.warn(`Template review check failed: ${String(error)}`));
   }
 
   private async tickSession(sessionId: string, ready: string[]): Promise<void> {
