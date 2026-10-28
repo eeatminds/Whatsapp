@@ -146,6 +146,7 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   });
   app.patch('/lead-sources/:id', async request => s.leads.update(params(idParam, request).id, request.body));
   app.put('/lead-sources/:id/fields', async request => s.leads.setFields(params(idParam, request).id, request.body));
+  app.put('/lead-sources/:id/sheet', async request => s.leads.setSheet(params(idParam, request).id, request.body));
 
   app.post('/lead-sources/:id/reset-link', async request => s.leads.resetLink(params(idParam, request).id));
   app.delete('/lead-sources/:id', async request => {

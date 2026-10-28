@@ -46,6 +46,19 @@ export const leadSourceInputSchema = z.object({
 
 export type LeadActions = z.infer<typeof actionsSchema>;
 
+const tabName = z.string().trim().min(1).max(100);
+/**
+ * Which tabs of a Google Sheet to read: all (new tabs too) or only the chosen ones; and whether rows
+ * already in a tab when it is first read are left alone ("skip") or added as contacts without any
+ * message ("import"). The sheet's script asks for these each minute, so changes need no new script.
+ */
+export const sheetSettingsSchema = z.object({
+  mode: z.enum(['all', 'only']).default('all'),
+  selected: z.array(tabName).max(50).default([]),
+  existing: z.enum(['skip', 'import']).default('skip'),
+});
+export type SheetSettings = z.infer<typeof sheetSettingsSchema>;
+
 interface SourceRow {
   id: number;
   name: string;
@@ -56,6 +69,9 @@ interface SourceRow {
   thank_you_url: string | null;
   field_map: string;
   fields_seen: string;
+  sheet_tabs: string;
+  sheet_config: string;
+  sheet_synced_at: string | null;
   received: number;
   failed: number;
   last_received_at: string | null;
@@ -74,6 +90,8 @@ export interface LeadSource {
   fieldMap: FieldMap;
   /** Columns this source has sent, and what each became last time. */
   fieldsSeen: SeenField[];
+  /** Google Sheets only: the tabs the sheet reported and which ones are read. */
+  sheet: SheetSettings & { tabs: string[]; syncedAt: string | null };
   url: string | null;
   received: number;
   failed: number;
@@ -314,6 +332,11 @@ export class LeadsService {
       thankYouUrl: row.thank_you_url,
       fieldMap: fieldMapSchema.catch({}).parse(parseJson(row.field_map, {})),
       fieldsSeen: parseJson<SeenField[]>(row.fields_seen, []),
+      sheet: {
+        ...sheetSettingsSchema.catch({ mode: 'all', selected: [], existing: 'skip' }).parse(parseJson(row.sheet_config, {})),
+        tabs: parseJson<string[]>(row.sheet_tabs, []),
+        syncedAt: row.sheet_synced_at,
+      },
       url: this.url(row.token),
       received: row.received,
       failed: row.failed,
@@ -415,6 +438,25 @@ export class LeadsService {
     const next = [...seen.values()].slice(-60);
     const json = JSON.stringify(next);
     if (json !== JSON.stringify(source.fieldsSeen)) this.core.db.run('UPDATE lead_sources SET fields_seen = ? WHERE id = ?', json, source.id);
+  }
+
+  /**
+   * The sheet's script checks in: it reports its tabs and gets back which to read and what to do with
+   * rows that were already there. Returns the tab names to read.
+   */
+  sheetSync(source: LeadSource, tabs: unknown): { tabs: string[]; existing: SheetSettings['existing'] } {
+    const names = z.array(z.string()).max(200).catch([]).parse(tabs).map(t => t.trim().slice(0, 100)).filter(Boolean).slice(0, 50);
+    this.core.db.run('UPDATE lead_sources SET sheet_tabs = ?, sheet_synced_at = ? WHERE id = ?', JSON.stringify(names), this.now(), source.id);
+    const read = source.sheet.mode === 'all' ? names : names.filter(n => source.sheet.selected.includes(n));
+    return { tabs: read, existing: source.sheet.existing };
+  }
+
+  setSheet(sourceId: number, input: unknown): LeadSource {
+    this.row(sourceId);
+    const settings = sheetSettingsSchema.parse(input);
+    if (settings.mode === 'only' && settings.selected.length === 0) throw badRequest('Choose at least one tab, or read all tabs');
+    this.core.db.run('UPDATE lead_sources SET sheet_config = ?, updated_at = ? WHERE id = ?', JSON.stringify(settings), this.now(), sourceId);
+    return this.get(sourceId);
   }
 
   /** Save what each column is, then fix leads already received with the new choices. */
@@ -560,6 +602,7 @@ export class LeadsService {
   receive(
     source: LeadSource,
     payload: unknown,
+    options: { backfill?: boolean } = {},
   ): { ok: true; contactId: number; created: boolean; duplicate: boolean } | { ok: false; error: string } {
     const settings = this.settings.get();
     const rules = this.contacts.fieldRules();
@@ -597,7 +640,8 @@ export class LeadsService {
         });
         const contactId = upserted.contact.id;
         if (upserted.created) this.contacts.setLeadSource(contactId, source.id);
-        if (actions.sequenceId) {
+        // Rows that were already in a sheet are added quietly: no welcome series, no owner ping.
+        if (actions.sequenceId && !options.backfill) {
           try {
             this.sequences.enroll(actions.sequenceId, [contactId], false);
           } catch (error) {
@@ -611,8 +655,8 @@ export class LeadsService {
       this.logEvent(source.id, 'failed', null, message.slice(0, 300));
       return { ok: false, error: message };
     }
-    this.logEvent(source.id, result.created ? 'added' : 'updated', result.contactId, null);
-    this.notifyOwner(source, lead, result.created);
+    this.logEvent(source.id, result.created ? 'added' : 'updated', result.contactId, options.backfill ? 'Earlier row from the sheet: added without messages' : null);
+    if (!options.backfill) this.notifyOwner(source, lead, result.created);
     return { ok: true, ...result, duplicate: false };
   }
 

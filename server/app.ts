@@ -387,8 +387,15 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
       const source = runtime?.services.leads.byToken(token);
       if (!runtime || !source) return reply.status(404).send({ ok: false, error: 'Unknown lead link' });
       if (!source.active) return reply.status(403).send({ ok: false, error: 'This lead link is switched off' });
+      // A Google Sheet script checking in: which tabs to read (not a lead, so not rate limited as one).
+      const raw: unknown = request.body ?? {};
+      const fields = raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...(raw as Record<string, unknown>) } : null;
+      const control = fields?._wa_reach;
+      if (fields) delete fields._wa_reach;
+      const body = fields ?? raw;
+      if (control === 'sync') return { ok: true, ...runtime.services.leads.sheetSync(source, fields?.tabs) };
       if (!leadRateOk(`${tenantId}:${source.id}`)) return reply.status(429).send({ ok: false, error: 'Too many leads at once; try again in a minute' });
-      const result = runtime.services.leads.receive(source, request.body ?? {});
+      const result = runtime.services.leads.receive(source, body, { backfill: control === 'backfill' });
       if (!result.ok) return reply.status(422).send({ ok: false, error: result.error });
       // Send the welcome message now rather than on the next tick, when the business may send.
       if (platform.canSend(tenantId)) void runtime.services.dispatcher.tick().catch(() => undefined);

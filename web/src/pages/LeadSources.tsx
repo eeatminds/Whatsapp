@@ -5,6 +5,7 @@ import { IconPlus } from '../components/icons';
 import { TagPicker } from '../components/pickers';
 import { CopyField } from '../components/official';
 import { formatDateTime, formatPhone, relativeTime } from '../format';
+import { sheetScript } from '../sheet-script';
 
 type Kind = 'google_sheet' | 'website' | 'wix' | 'other';
 
@@ -18,6 +19,7 @@ interface LeadSource {
   url: string | null;
   fieldMap: Record<string, FieldTarget>;
   fieldsSeen: Array<{ key: string; as: FieldTarget }>;
+  sheet: { mode: 'all' | 'only'; selected: string[]; existing: 'skip' | 'import'; tabs: string[]; syncedAt: string | null };
   received: number;
   failed: number;
   lastReceivedAt: string | null;
@@ -199,6 +201,101 @@ function ColumnsEditor({ source, info, onSaved }: { source: LeadSource; info?: C
   );
 }
 
+function SheetTabs({ source, onSaved }: { source: LeadSource; onSaved: () => void }) {
+  const toast = useToast();
+  const [mode, setMode] = useState(source.sheet.mode);
+  const [selected, setSelected] = useState<string[]>(source.sheet.selected);
+  const [existing, setExisting] = useState(source.sheet.existing);
+  const [busy, setBusy] = useState(false);
+  const tabs = [...source.sheet.tabs, ...selected.filter(t => !source.sheet.tabs.includes(t))];
+  const dirty = mode !== source.sheet.mode || existing !== source.sheet.existing || JSON.stringify([...selected].sort()) !== JSON.stringify([...source.sheet.selected].sort());
+  return (
+    <div className="stack">
+      {source.sheet.syncedAt ? (
+        <p className="small muted" style={{ margin: 0 }}>
+          Your sheet last checked in {relativeTime(source.sheet.syncedAt)}. Changes here apply within a minute; no need to change the script.
+        </p>
+      ) : (
+        <Callout tone="warn">
+          {source.lastReceivedAt
+            ? 'Your sheet uses the older script, which reads only the first tab. '
+            : 'Your sheet has not checked in yet. '}
+          Paste the latest script (see <strong>How to connect Google Sheet</strong>) and its tabs show here within a minute.
+        </Callout>
+      )}
+      <div className="stack tight">
+        <span className="label">Which tabs to read</span>
+        <label className="row" style={{ gap: 8 }}>
+          <input type="radio" name="sheet-mode" checked={mode === 'all'} onChange={() => setMode('all')} />
+          All tabs, including tabs you add later
+        </label>
+        <label className="row" style={{ gap: 8 }}>
+          <input type="radio" name="sheet-mode" checked={mode === 'only'} onChange={() => setMode('only')} />
+          Only the tabs I tick
+        </label>
+        {tabs.length > 0 && (
+          <div className="sheet-tabs">
+            {tabs.map(t => (
+              <label key={t} className="row" style={{ gap: 8, opacity: mode === 'all' ? 0.7 : 1 }}>
+                <input
+                  type="checkbox"
+                  disabled={mode === 'all'}
+                  checked={mode === 'all' || selected.includes(t)}
+                  onChange={e => setSelected(e.target.checked ? [...selected, t] : selected.filter(x => x !== t))}
+                />
+                {t}
+                {!source.sheet.tabs.includes(t) && <span className="small muted">(not in the sheet any more)</span>}
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="stack tight">
+        <span className="label">Rows that were already in a tab when WA Reach first reads it</span>
+        <label className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
+          <input type="radio" name="sheet-existing" checked={existing === 'skip'} onChange={() => setExisting('skip')} />
+          <span>
+            Leave them alone <span className="muted">(recommended)</span>
+            <br />
+            <span className="small muted">They are marked “Not sent” in the WA Status column. Only rows added from then on are sent.</span>
+          </span>
+        </label>
+        <label className="row" style={{ gap: 8, alignItems: 'flex-start' }}>
+          <input type="radio" name="sheet-existing" checked={existing === 'import'} onChange={() => setExisting('import')} />
+          <span>
+            Add them as contacts too, without sending them any message
+            <br />
+            <span className="small muted">They get the source’s tags but no welcome series, so old leads are not all messaged at once.</span>
+          </span>
+        </label>
+      </div>
+      <div className="row wrap">
+        <Button
+          variant="primary"
+          loading={busy}
+          disabled={!dirty || (mode === 'only' && selected.length === 0)}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await put(`/api/lead-sources/${source.id}/sheet`, { mode, selected, existing });
+              toast.success('Saved. Your sheet picks this up within a minute.');
+              onSaved();
+            } catch (err) {
+              toast.error(errorMessage(err));
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Save tabs
+        </Button>
+        {mode === 'only' && selected.length === 0 && <span className="small muted">Tick at least one tab.</span>}
+      </div>
+      <p className="hint">Each lead gets a “Sheet tab” custom field, so you can filter Contacts by the form it came from.</p>
+    </div>
+  );
+}
+
 interface LeadEvent {
   id: number;
   status: 'added' | 'updated' | 'duplicate' | 'failed';
@@ -217,42 +314,6 @@ const KINDS: Array<{ value: Kind; title: string; text: string }> = [
 ];
 
 const KIND_LABEL: Record<Kind, string> = { google_sheet: 'Google Sheet', website: 'Website form', wix: 'Wix form', other: 'Other app' };
-
-export function sheetScript(url: string): string {
-  return `// WA Reach: sends each new row of this sheet to your WhatsApp automation.
-// The first row must be the column names, with one column called Phone (Name and Email are optional).
-const WA_REACH_LINK = '${url}';
-const STATUS_COLUMN = 'WA Status';
-
-function sendNewLeads() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
-  const rows = sheet.getDataRange().getValues();
-  if (rows.length < 2) return;
-  const head = rows[0].map(h => String(h).trim());
-  let statusCol = head.indexOf(STATUS_COLUMN);
-  if (statusCol < 0) {
-    statusCol = head.length;
-    sheet.getRange(1, statusCol + 1).setValue(STATUS_COLUMN);
-  }
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    if (row[statusCol] || row.every(v => v === '')) continue;
-    const lead = {};
-    head.forEach((h, c) => { if (h && c !== statusCol && row[c] !== '') lead[h] = String(row[c]); });
-    const res = UrlFetchApp.fetch(WA_REACH_LINK, {
-      method: 'post', contentType: 'application/json', payload: JSON.stringify(lead), muteHttpExceptions: true,
-    });
-    let status = 'Sent to WA Reach';
-    if (res.getResponseCode() < 300) {
-      try { if (JSON.parse(res.getContentText()).duplicate) status = 'Duplicate (number already a lead)'; } catch (e) {}
-    } else {
-      try { status = 'Error: ' + JSON.parse(res.getContentText()).error; } catch (e) { status = 'Error ' + res.getResponseCode(); }
-    }
-    sheet.getRange(i + 1, statusCol + 1).setValue(status);
-  }
-}
-`;
-}
 
 function htmlForm(url: string): string {
   return `<form action="${url}" method="POST">
@@ -288,7 +349,10 @@ function SetupSteps({ source }: { source: LeadSource }) {
     return (
       <div className="stack">
         <ol className="setup-steps">
-          <li>Open your leads sheet. Make sure row 1 has column names and one column is called <strong>Phone</strong> (Name, Email, City and any other columns are saved too).</li>
+          <li>
+            Open your leads sheet. In each tab, row 1 must have the column names, including a phone number column (Name, Email, City and any other columns are saved
+            too).
+          </li>
           <li>
             Click <strong>Extensions → Apps Script</strong>, delete everything there, paste the code below and click <strong>Save</strong> (the disk icon).
           </li>
@@ -296,11 +360,18 @@ function SetupSteps({ source }: { source: LeadSource }) {
             Click the clock icon (<strong>Triggers</strong>) → <strong>Add Trigger</strong> → function <code>sendNewLeads</code>, event source <strong>Time-driven</strong>,{' '}
             <strong>Minutes timer</strong>, <strong>Every minute</strong> → Save. Allow access when Google asks.
           </li>
-          <li>Add a test row with your own number. Within a minute a <strong>WA Status</strong> column shows “Sent to WA Reach” and the lead appears below.</li>
+          <li>
+            Within a minute your tabs appear under <strong>Sheet tabs</strong> here: choose which tabs to read. Rows already in a tab are marked “Not sent” and nobody is
+            messaged, unless you choose to add them quietly.
+          </li>
+          <li>Add a test row with your own number. Within a minute its <strong>WA Status</strong> shows “Sent to WA Reach” and the lead appears below.</li>
           <li>Open <strong>Columns</strong> here to check the name, email and your other columns came through as you expect.</li>
         </ol>
         <CodeBlock code={sheetScript(url)} />
-        <p className="hint">Rows are sent once. To resend a row, clear its WA Status cell.</p>
+        <p className="hint">
+          Rows are sent once. To resend a row, clear its WA Status cell. Already using an older version of this script? Paste this one over it to choose tabs; rows
+          already sent are not sent again.
+        </p>
       </div>
     );
   }
@@ -451,7 +522,7 @@ function SourceEditor({ source, onClose, onSaved }: { source: LeadSource | null;
 
 function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: number; onClose: () => void; onEdit: (s: LeadSource) => void; onChanged: () => void }) {
   const { data, error, reload } = useApi<{ source: LeadSource; events: LeadEvent[]; columns: ColumnInfo }>(`/api/lead-sources/${sourceId}`, { poll: 5000 });
-  const [view, setView] = useState<'setup' | 'columns' | 'leads'>('setup');
+  const [view, setView] = useState<'setup' | 'tabs' | 'columns' | 'leads'>('setup');
   const { confirm, dialog } = useConfirm();
   const toast = useToast();
   const source = data?.source;
@@ -516,11 +587,13 @@ function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: numb
             onChange={setView}
             options={[
               { value: 'setup', label: `How to connect ${KIND_LABEL[source.kind]}` },
+              ...(source.kind === 'google_sheet' ? [{ value: 'tabs' as const, label: `Sheet tabs (${source.sheet.tabs.length})` }] : []),
               { value: 'columns', label: `Columns (${source.fieldsSeen.length})` },
               { value: 'leads', label: `Recent leads (${data.events.length})` },
             ]}
           />
           {view === 'setup' && source.url && <SetupSteps source={source} />}
+          {view === 'tabs' && <SheetTabs key={JSON.stringify(source.sheet)} source={source} onSaved={() => void reload()} />}
           {view === 'columns' && (
             <ColumnsEditor
               key={JSON.stringify([source.fieldMap, data.columns.savedAs, source.fieldsSeen.length])}

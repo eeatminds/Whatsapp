@@ -386,4 +386,11 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE contacts ADD COLUMN saved INTEGER NOT NULL DEFAULT 1;
   CREATE INDEX contacts_saved ON contacts (saved);
   `,
+  // 11: Google Sheets with several tabs: the tabs the sheet reported, which ones to read, and what to
+  // do with rows that were already in a tab when it was first read.
+  `
+  ALTER TABLE lead_sources ADD COLUMN sheet_tabs TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE lead_sources ADD COLUMN sheet_config TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE lead_sources ADD COLUMN sheet_synced_at TEXT;
+  `,
 ];
