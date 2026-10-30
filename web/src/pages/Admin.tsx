@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, del, patch, post, put, useApi, errorMessage, type HealthReport, type Payment, type PlatformSettings, type PlatformUser, type TenantInfo, type TenantStats } from '../api';
+import { api, del, patch, post, put, useApi, errorMessage, ROLE_LABEL, type HealthReport, type Payment, type PlatformSettings, type PlatformUser, type TenantInfo, type TenantStats } from '../api';
 import { SendingLimitsForm, type SendingLimits } from '../components/SendingLimits';
 import { Badge, Button, Callout, Card, Drawer, Empty, ErrorNote, Field, Loading, Modal, PageHeader, StatTile, useConfirm, useToast } from '../components/ui';
 import { IconCopy, IconPlus, IconSearch } from '../components/icons';
@@ -547,7 +547,7 @@ function BusinessDrawer({ tenantId, onClose, onChanged }: { tenantId: string; on
                 <td>
                   <strong>{u.email}</strong>
                   <div className="small secondary">
-                    {u.role === 'owner' ? 'Owner' : 'Team member'}
+                    {u.role === 'owner' ? 'Admin (owner)' : ROLE_LABEL[u.role]}
                     {u.disabled ? ' · disabled' : ''} · {u.lastLoginAt ? `last seen ${relativeTime(u.lastLoginAt)}` : 'never signed in'}
                   </div>
                 </td>

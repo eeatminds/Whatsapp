@@ -123,8 +123,30 @@ function BusinessBanner() {
 }
 
 export function Layout({ children, onLogout }: { children: ReactNode; onLogout: () => void }) {
-  const { data: inbox } = useApi<{ unread: number }>('/api/inbox?unread=true', { poll: 15000 });
   const { me } = useSession();
+  const caller = me.user?.role === 'caller';
+  const { data: inbox } = useApi<{ unread: number }>(caller ? null : '/api/inbox?unread=true', { poll: 15000 });
+  // Callers only work their leads.
+  if (caller) {
+    return (
+      <Shell
+        onLogout={onLogout}
+        nav={
+          <>
+            {me.tenant && <div className="nav-section" style={{ marginTop: 0, textTransform: 'none', letterSpacing: 0, fontSize: 13, color: 'var(--text)' }}>{me.tenant.name}</div>}
+            <NavItem to="/leads" icon={<IconChart />}>
+              Your leads
+            </NavItem>
+            <p className="small muted" style={{ padding: '8px 12px', margin: 0 }}>
+              Signed in as a caller. Your admin manages your password and which leads you see.
+            </p>
+          </>
+        }
+      >
+        {children}
+      </Shell>
+    );
+  }
   return (
     <Shell
       onLogout={onLogout}

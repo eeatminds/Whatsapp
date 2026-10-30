@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Platform, UserRow } from '../platform/platform.js';
 import { toPublicUser } from '../platform/platform.js';
 import { badRequest, HttpError, notFound } from '../lib/errors.js';
+import { CALLER_REFUSED } from '../lib/permissions.js';
 
 export interface AuthInfo {
   user: UserRow | null;
@@ -93,6 +94,7 @@ export async function registerAdminRoutes(app: FastifyInstance, platform: Platfo
     const { id, userId } = userParam.parse(request.params);
     if (platform.user(userId)?.tenant_id !== id) throw notFound('User');
     platform.deleteUser(userId);
+    platform.runtime(id).services.leads.forgetTeamMember(userId);
     return { ok: true };
   });
 
@@ -132,6 +134,8 @@ export async function registerAdminRoutes(app: FastifyInstance, platform: Platfo
 export async function registerAccountRoutes(app: FastifyInstance, platform: Platform): Promise<void> {
   app.addHook('onRequest', async request => {
     if (!request.auth?.tenantId) throw new HttpError(401, 'Authentication required');
+    // Second, independent check: callers never see billing or the team, and their admin sets their password.
+    if (request.auth.user?.role === 'caller') throw new HttpError(403, CALLER_REFUSED);
   });
 
   const tenantOf = (request: FastifyRequest): string => {
@@ -159,6 +163,7 @@ export async function registerAccountRoutes(app: FastifyInstance, platform: Plat
   app.post('/password', async request => {
     const user = request.auth?.user;
     if (!user) throw new HttpError(403, 'Sign in with your email to change your password');
+    if (user.role === 'caller') throw new HttpError(403, 'Ask your admin to change your password');
     const { current, next } = z.object({ current: z.string(), next: z.string() }).parse(request.body);
     platform.changeOwnPassword(user.id, current, next);
     return { ok: true };
@@ -175,19 +180,49 @@ export async function registerAccountRoutes(app: FastifyInstance, platform: Plat
     return { ok: true };
   });
 
+  /** A team member of this business that its admin may manage (never the admin account itself). */
+  const teamMember = (request: FastifyRequest): UserRow => {
+    const { userId } = z.object({ userId: z.coerce.number().int().positive() }).parse(request.params);
+    const target = platform.user(userId);
+    if (!target || target.tenant_id !== tenantOf(request)) throw notFound('User');
+    if (target.role === 'owner') throw badRequest("The admin account is managed from its own password form, and can't be removed");
+    return target;
+  };
+
   app.post('/users', async (request, reply) => {
     requireOwner(request);
-    const body = z.object({ email: z.string(), name: z.string().optional() }).parse(request.body);
-    return reply.status(201).send(platform.addUser(tenantOf(request), { ...body, role: 'member' }));
+    const body = z
+      .object({
+        email: z.string(),
+        name: z.string().optional(),
+        role: z.enum(['member', 'caller']).default('member'),
+        leadScope: z.enum(['assigned', 'all']).optional(),
+      })
+      .parse(request.body);
+    return reply.status(201).send(platform.addUser(tenantOf(request), body));
+  });
+
+  /** Change a team member's name, role (full access or caller) or which leads a caller sees. */
+  app.patch('/users/:userId', async request => {
+    requireOwner(request);
+    const target = teamMember(request);
+    return platform.updateTeamMember(tenantOf(request), target.id, request.body);
+  });
+
+  /** Only the admin sets team members' passwords: typed in, or made up when left empty. Signs them out. */
+  app.post('/users/:userId/password', async request => {
+    requireOwner(request);
+    const target = teamMember(request);
+    const { password } = z.object({ password: z.string().max(200).optional() }).parse(request.body ?? {});
+    return { password: platform.resetPassword(target.id, password?.trim() ? password : undefined) };
   });
 
   app.delete('/users/:userId', async request => {
     requireOwner(request);
-    const { userId } = z.object({ userId: z.coerce.number().int().positive() }).parse(request.params);
-    const target = platform.user(userId);
-    if (!target || target.tenant_id !== tenantOf(request)) throw notFound('User');
-    if (target.role === 'owner') throw badRequest('The owner account cannot be removed');
-    platform.deleteUser(userId);
+    const target = teamMember(request);
+    platform.deleteUser(target.id);
+    // Their leads go back to "not given to anyone", and lead sources stop giving them new ones.
+    platform.runtime(tenantOf(request)).services.leads.forgetTeamMember(target.id);
     return { ok: true };
   });
 }

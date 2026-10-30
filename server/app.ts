@@ -14,6 +14,7 @@ import { OpenWAError } from './openwa/client.js';
 import { MetaError } from './meta/client.js';
 import { parseCookies, serializeCookie, signSession, verifySession, verifyOpenWASignature } from './lib/crypto.js';
 import { isBotUserAgent } from './lib/links.js';
+import { CALLER_REFUSED, callerMayUse, isCaller } from './lib/permissions.js';
 import { registerApiRoutes } from './routes/api.js';
 import type { WebhookEnvelope } from './services/inbound.js';
 
@@ -195,6 +196,10 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
       return void reply.status(403).send({ error: 'Cross-origin request refused' });
     }
     request.auth = auth;
+    // Callers only get the Leads page: refuse everything else here, before any route runs.
+    if (auth.user?.role === 'caller' && !callerMayUse(request.method, path)) {
+      return void reply.status(403).send({ error: CALLER_REFUSED });
+    }
     const isAdmin = auth.user?.role === 'platform_admin';
     if (path.startsWith('/api/admin/')) {
       if (!isAdmin) return void reply.status(403).send({ error: 'Platform admins only' });
@@ -229,11 +234,13 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
     const brand = { brandName: settings.brandName, supportContact: settings.supportContact, currencySymbol: settings.currencySymbol };
     const auth = resolveAuth(request);
     if (!auth || !auth.user) return { authenticated: false, brand };
+    const tenant = auth.tenantId ? platform.tenant(auth.tenantId) : null;
     return {
       authenticated: true,
       brand,
       user: toPublicUser(auth.user),
-      tenant: auth.tenantId ? platform.tenant(auth.tenantId) : null,
+      // Callers see the business's name, not its plan, price or payments.
+      tenant: tenant && auth.user.role === 'caller' ? { id: tenant.id, name: tenant.name, status: tenant.status, access: tenant.access } : tenant,
       impersonating: auth.impersonating,
     };
   });
@@ -445,10 +452,16 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
       // Second, independent check: every business route needs a signed-in business context.
       scope.addHook('onRequest', async request => {
         if (!request.auth?.tenantId || !tenantContext.getStore()) throw new HttpError(401, 'Authentication required');
+        if (isCaller(request) && !callerMayUse(request.method, request.routeOptions.url ?? '')) throw new HttpError(403, CALLER_REFUSED);
       });
       await registerApiRoutes(scope, core, services, {
         metaGuideVideoUrl: () => platform.settings().metaGuideVideoUrl || null,
         supportContact: () => platform.settings().supportContact || null,
+        team: () =>
+          platform
+            .users(current().tenantId)
+            .filter(u => !u.disabled && u.role !== 'platform_admin')
+            .map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role as 'owner' | 'member' | 'caller' })),
       });
     },
     { prefix: '/api' },

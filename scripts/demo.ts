@@ -336,6 +336,16 @@ async function main(): Promise<void> {
       s.contacts.setLead(result.contactId, { stage, remark }, team[i % team.length]);
     }
   }
+  // Two callers who only see the Leads page; most leads are already given out.
+  const callers = [
+    platform.addUser(chai.tenant.id, { email: 'ramgopal@chaico.demo', name: 'Ramgopal', role: 'caller', password: DEMO_PASSWORD }).user,
+    platform.addUser(chai.tenant.id, { email: 'akshay@chaico.demo', name: 'Akshay', role: 'caller', password: DEMO_PASSWORD }).user,
+  ];
+  const leadIds = s.contacts.ids({ channel: `src:${sources[0].id}` }).concat(s.contacts.ids({ channel: `src:${sources[1].id}` }));
+  leadIds.forEach((id, i) => {
+    if (i % 5 !== 4) s.contacts.assign([id], callers[i % 2].id);
+  });
+  s.leads.update(sources[0].id, { ...sources[0], actions: { ...sources[0].actions, assignTo: callers.map(c => c.id) } });
   // Someone new writes in: Inbox only until the business adds them.
   offset = -20 * 60_000;
   await s.inbound.handle({
@@ -438,6 +448,7 @@ async function main(): Promise<void> {
   console.log(`\n  WA Reach demo running at http://localhost:${PORT}`);
   console.log(`  Admin panel:   admin@demo.local / ${DEMO_PASSWORD}`);
   console.log(`  A business:    owner@chaico.demo / ${DEMO_PASSWORD}`);
+  console.log(`  A caller:      ramgopal@chaico.demo / ${DEMO_PASSWORD}`);
   console.log(`  Simulated OpenWA gateway: ${fake.url} (no real WhatsApp messages are sent)\n`);
 }
 

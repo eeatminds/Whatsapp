@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { del, patch, post, put, useApi, errorMessage, type Sequence } from '../api';
 import { Badge, Button, Callout, Card, Empty, ErrorNote, Field, Loading, Modal, Segmented, Toggle, useConfirm, useToast } from '../components/ui';
 import { IconCheck, IconCopy, IconPlus } from '../components/icons';
@@ -6,6 +7,7 @@ import { TagPicker } from '../components/pickers';
 import { CopyField } from '../components/official';
 import { formatDateTime, formatPhone, relativeTime } from '../format';
 import { sheetScript } from '../sheet-script';
+import { memberLabel, memberName, useTeam } from '../team';
 
 type Kind = 'google_sheet' | 'website' | 'wix' | 'other';
 
@@ -14,7 +16,7 @@ interface LeadSource {
   name: string;
   kind: Kind;
   active: boolean;
-  actions: { tagIds: number[]; sequenceId?: number | null; markOptedIn: boolean; notifyPhone?: string | null };
+  actions: { tagIds: number[]; sequenceId?: number | null; markOptedIn: boolean; notifyPhone?: string | null; assignTo: number[] };
   thankYouUrl: string | null;
   url: string | null;
   fieldMap: Record<string, FieldTarget>;
@@ -546,15 +548,21 @@ function SourceEditor({ source, onClose, onSaved }: { source: LeadSource | null;
       sequenceId: source?.actions.sequenceId ?? null,
       markOptedIn: source?.actions.markOptedIn ?? false,
       notifyPhone: source?.actions.notifyPhone ? `+${source.actions.notifyPhone}` : '',
+      assignTo: source?.actions.assignTo ?? [],
     },
   });
+  const { team } = useTeam();
+  const assignable = team;
+  const toggleAssignee = (id: number, on: boolean) =>
+    setForm(f => ({ ...f, actions: { ...f.actions, assignTo: on ? [...f.actions.assignTo, id] : f.actions.assignTo.filter(x => x !== id) } }));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true);
     setError(null);
     try {
-      const body = { ...form, actions: { ...form.actions, notifyPhone: form.actions.notifyPhone.trim() || null } };
+      const ids = new Set(team.map(m => m.id));
+      const body = { ...form, actions: { ...form.actions, notifyPhone: form.actions.notifyPhone.trim() || null, assignTo: form.actions.assignTo.filter(id => ids.has(id)) } };
       onSaved(source ? await patch<LeadSource>(`/api/lead-sources/${source.id}`, body) : await post<LeadSource>('/api/lead-sources', body));
     } catch (err) {
       setError(errorMessage(err));
@@ -623,6 +631,32 @@ function SourceEditor({ source, onClose, onSaved }: { source: LeadSource | null;
               <Field label="Thank-you page (optional)" hint="Where visitors go after submitting a plain HTML form.">
                 <input className="input" value={form.thankYouUrl} onChange={e => setForm({ ...form, thankYouUrl: e.target.value })} placeholder="https://your-site.com/thank-you" />
               </Field>
+            )}
+          </div>
+          <div className="stack tight">
+            <span className="label">Give new leads to</span>
+            {assignable.length === 0 ? (
+              <span className="small muted">
+                Add callers in <Link to="/account">Account & billing → Team</Link> to share new leads between them.
+              </span>
+            ) : (
+              <>
+                <div className="row wrap" style={{ gap: 6 }}>
+                  {assignable.map(m => (
+                    <label key={m.id} className={`chip-check ${form.actions.assignTo.includes(m.id) ? 'on' : ''}`}>
+                      <input type="checkbox" checked={form.actions.assignTo.includes(m.id)} onChange={e => toggleAssignee(m.id, e.target.checked)} />
+                      {memberLabel(m)}
+                    </label>
+                  ))}
+                </div>
+                <span className="small muted">
+                  {form.actions.assignTo.length === 0
+                    ? 'Nobody: you give leads out yourself on the Leads page.'
+                    : form.actions.assignTo.length === 1
+                      ? 'Every new lead goes to this person, and shows on their Leads page.'
+                      : `New leads are shared out in turn between these ${form.actions.assignTo.length} people.`}
+                </span>
+              </>
             )}
           </div>
           <Toggle
@@ -764,6 +798,7 @@ function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: numb
 export function LeadSourcesTab() {
   const { data, error, loading, reload } = useApi<{ items: LeadSource[]; available: boolean }>('/api/lead-sources', { poll: 15000 });
   const { data: sequences } = useApi<Sequence[]>('/api/sequences');
+  const { byId } = useTeam();
   const [editing, setEditing] = useState<{ source: LeadSource | null } | null>(null);
   const [viewing, setViewing] = useState<number | null>(null);
   const { confirm, dialog } = useConfirm();
@@ -803,6 +838,11 @@ export function LeadSourcesTab() {
                       {sequence ? `Starts “${sequence.name}”` : 'No message'}
                       {s.actions.tagIds.length ? `, adds ${s.actions.tagIds.length} tag${s.actions.tagIds.length > 1 ? 's' : ''}` : ''}
                       {s.actions.notifyPhone ? ', notifies you' : ''}
+                      {s.actions.assignTo?.length
+                        ? s.actions.assignTo.length === 1
+                          ? `, gives leads to ${byId.get(s.actions.assignTo[0]) ? memberName(byId.get(s.actions.assignTo[0])!) : 'a team member'}`
+                          : `, shares leads between ${s.actions.assignTo.length} people`
+                        : ''}
                       {s.lastReceivedAt ? `. Last lead ${relativeTime(s.lastReceivedAt)}, ${s.received} total` : ''}
                       {s.failed ? `, ${s.failed} not added` : ''}
                     </span>

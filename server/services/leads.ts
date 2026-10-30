@@ -28,13 +28,15 @@ const actionsSchema = z.object({
   markOptedIn: z.boolean().default(false),
   /** Owner's WhatsApp number to notify about each new lead. */
   notifyPhone: z.string().trim().max(40).nullish(),
+  /** Team members (user ids) new leads are given to, taking turns when there are several. */
+  assignTo: z.array(id).max(50).default([]),
 });
 
 export const leadSourceInputSchema = z.object({
   name: z.string().trim().min(1).max(80),
   kind: z.enum(LEAD_KINDS).default('other'),
   active: z.boolean().default(true),
-  actions: actionsSchema.default({ tagIds: [], markOptedIn: false }),
+  actions: actionsSchema.default({ tagIds: [], markOptedIn: false, assignTo: [] }),
   /** Where a plain HTML form is sent after submitting. */
   thankYouUrl: z
     .string()
@@ -606,6 +608,19 @@ export class LeadsService {
     );
   }
 
+  /** A team member was removed: their leads are given to no one, and sources stop giving them new ones. */
+  forgetTeamMember(userId: number): void {
+    this.core.db.tx(() => {
+      this.contacts.unassignAll(userId);
+      for (const row of this.core.db.all<SourceRow>('SELECT * FROM lead_sources')) {
+        const actions = actionsSchema.parse(parseJson(row.actions, {}));
+        if (!actions.assignTo.includes(userId)) continue;
+        actions.assignTo = actions.assignTo.filter(id => id !== userId);
+        this.core.db.run('UPDATE lead_sources SET actions = ?, assign_next = 0 WHERE id = ?', JSON.stringify(actions), row.id);
+      }
+    });
+  }
+
   /** The source for a link token (constant-time compare), or null. */
   byToken(token: string): LeadSource | null {
     if (!/^[A-Za-z0-9]{32}$/.test(token)) return null;
@@ -666,6 +681,12 @@ export class LeadsService {
           } catch (error) {
             this.core.log.warn(`Lead source ${source.id}: could not start sequence: ${String(error)}`);
           }
+        }
+        // New leads go to the next person in turn (rows that were already in a sheet are left for the admin).
+        if (actions.assignTo.length && !options.backfill && this.contacts.assigneeOf(contactId) === null) {
+          const turn = this.core.db.get<{ assign_next: number }>('SELECT assign_next FROM lead_sources WHERE id = ?', source.id)?.assign_next ?? 0;
+          this.contacts.assign([contactId], actions.assignTo[turn % actions.assignTo.length]);
+          this.core.db.run('UPDATE lead_sources SET assign_next = ? WHERE id = ?', (turn + 1) % actions.assignTo.length, source.id);
         }
         return { contactId, created: upserted.created };
       });

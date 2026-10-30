@@ -58,6 +58,9 @@ export interface ContactRow {
   saved: number;
   /** ISO country of the number ('ZZ': unknown); null until worked out. */
   country: string | null;
+  /** The team member (platform user id) this lead is given to, to follow up. */
+  assigned_to: number | null;
+  assigned_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +99,9 @@ export interface Contact {
   saved: boolean;
   /** The number's country (ISO code), when known. */
   country: string | null;
+  /** The team member this lead is given to (their user id), if any. */
+  assignedTo: number | null;
+  assignedAt: string | null;
   createdAt: string;
   updatedAt: string;
   tags: Tag[];
@@ -127,6 +133,8 @@ export function toContact(row: ContactRow, tags: Tag[] = [], sourceNames: Map<nu
     channelKey: row.lead_source_id ? `src:${row.lead_source_id}` : (row.source ?? 'other'),
     saved: row.saved !== 0,
     country: row.country && row.country !== 'ZZ' ? row.country : null,
+    assignedTo: row.assigned_to ?? null,
+    assignedAt: row.assigned_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     tags,
@@ -202,6 +210,8 @@ export const contactFilterSchema = z.object({
   /** Added on or after / before these dates (YYYY-MM-DD, in the business's time zone). */
   from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  /** Who a lead is given to: a team member's user id, or "none" for leads not given to anyone. */
+  assignee: z.string().regex(/^(none|[1-9]\d{0,9})$/).optional(),
   ids: z.array(z.coerce.number().int().positive()).max(100_000).optional(),
 });
 
@@ -366,6 +376,9 @@ export class ContactsService {
     if (filter.from) parts.push({ sql: 'c.created_at >= ?', params: [this.dayStart(filter.from)] });
     if (filter.to) parts.push({ sql: 'c.created_at < ?', params: [this.dayStart(filter.to, 1)] });
     if (filter.waStatus) parts.push({ sql: 'c.wa_status = ?', params: [filter.waStatus] });
+    if (filter.assignee) {
+      parts.push(filter.assignee === 'none' ? { sql: 'c.assigned_to IS NULL', params: [] } : { sql: 'c.assigned_to = ?', params: [Number(filter.assignee)] });
+    }
     if (filter.origin) {
       const home = this.settings.get().defaultCountry;
       parts.push(
@@ -652,6 +665,31 @@ export class ContactsService {
 
   // ---------------------------------------------------------------- lead tracking
 
+  /** Give leads to a team member (null: to no one). Returns how many changed hands. */
+  assign(contactIds: number[], userId: number | null): number {
+    if (contactIds.length === 0) return 0;
+    const now = this.now();
+    return this.core.db.run(
+      `UPDATE contacts SET assigned_to = ?, assigned_at = ?, updated_at = ?
+        WHERE saved = 1 AND assigned_to IS NOT ? AND id IN (SELECT value FROM json_each(?))`,
+      userId,
+      userId === null ? null : now,
+      now,
+      userId,
+      JSON.stringify(contactIds),
+    ).changes;
+  }
+
+  /** A team member was removed: the leads they had are given to no one. */
+  unassignAll(userId: number): number {
+    return this.core.db.run('UPDATE contacts SET assigned_to = NULL, assigned_at = NULL WHERE assigned_to = ?', userId).changes;
+  }
+
+  /** The user a lead is given to (also for leads not in Contacts), or null. */
+  assigneeOf(contactId: number): number | null {
+    return this.row(contactId).assigned_to ?? null;
+  }
+
   /** Set a lead's stage and/or its shared remark. `by` is who made the change (shown to the team). */
   setLead(contactId: number, input: unknown, by: string): Contact {
     const data = leadUpdateSchema.parse(input);
@@ -733,7 +771,7 @@ export class ContactsService {
 
   /** Scoreboard, channel table and funnel for leads added in a date range. */
   leadReport(input: unknown) {
-    const filter = contactFilterSchema.pick({ from: true, to: true }).parse(input ?? {});
+    const filter = contactFilterSchema.pick({ from: true, to: true, assignee: true }).parse(input ?? {});
     const where = this.filterSql(filter);
     const byStage = Object.fromEntries(LEAD_STAGES.map(stage => [stage, 0])) as Record<LeadStage, number>;
     for (const r of this.core.db.all<{ lead_stage: LeadStage; n: number }>(
@@ -759,6 +797,8 @@ export class ContactsService {
     }
     return {
       range: { from: filter.from ?? null, to: filter.to ?? null },
+      /** The business's own country, for the "Indian / International numbers" filter. */
+      homeCountry: this.settings.get().defaultCountry,
       total,
       byStage,
       channels: [...channels.values()].sort((a, b) => b.leads - a.leads || a.name.localeCompare(b.name)),

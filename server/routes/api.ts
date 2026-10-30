@@ -2,7 +2,8 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Core } from '../context.js';
 import type { Services } from '../services/index.js';
-import { badRequest } from '../lib/errors.js';
+import { badRequest, notFound } from '../lib/errors.js';
+import { callerLeadOwner, isCaller } from '../lib/permissions.js';
 import { chatIdFor } from '../lib/phone.js';
 import { contactFilterSchema } from '../services/contacts.js';
 import { matchesRule, normalizeKeywordText } from '../services/auto-replies.js';
@@ -41,13 +42,37 @@ function filterFromQuery(query: unknown) {
   return contactFilterSchema.parse(query ?? {});
 }
 
+export interface TeamMember {
+  id: number;
+  name: string | null;
+  email: string;
+  role: 'owner' | 'member' | 'caller';
+}
+
 export interface PlatformInfo {
   /** Setup video the platform admin chose to show beside the official-number guide. */
   metaGuideVideoUrl(): string | null;
   supportContact(): string | null;
+  /** People who can sign in to this business (and so can be given leads). */
+  team(): TeamMember[];
 }
 
 export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Services, platform?: PlatformInfo): Promise<void> {
+  const team = (): TeamMember[] => platform?.team() ?? [];
+  /** Leads can only be given to someone who can sign in to this business. */
+  const checkTeamMember = (userId: number) => {
+    if (!team().some(m => m.id === userId)) throw badRequest('That person is not in your team (Account & billing → Team)');
+  };
+  const checkAssignTo = (body: unknown) => {
+    const ids = (body as { actions?: { assignTo?: unknown } } | null)?.actions?.assignTo;
+    if (Array.isArray(ids)) for (const userId of ids) checkTeamMember(Number(userId));
+  };
+  /** A caller limited to their own leads only ever sees and changes those. */
+  const scoped = <T extends { assignee?: string }>(request: FastifyRequest, filter: T): T => {
+    const owner = callerLeadOwner(request);
+    return owner === null ? filter : { ...filter, assignee: String(owner) };
+  };
+
   /** Internal addresses and raw gateway errors are for the platform admin only. */
   const gatewayFor = (request: FastifyRequest) => {
     const gateway = s.sessions.gatewayStatus();
@@ -182,12 +207,18 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   // ---------------------------------------------------------------- lead sources (Google Sheets, website forms, Wix...)
 
   app.get('/lead-sources', async () => ({ items: s.leads.list(), available: !!core.config.leadHookUrl }));
-  app.post('/lead-sources', async (request, reply) => reply.status(201).send(s.leads.create(request.body)));
+  app.post('/lead-sources', async (request, reply) => {
+    checkAssignTo(request.body);
+    return reply.status(201).send(s.leads.create(request.body));
+  });
   app.get('/lead-sources/:id', async request => {
     const { id } = params(idParam, request);
     return { source: s.leads.get(id), events: s.leads.events(id), columns: s.leads.columnInfo(id) };
   });
-  app.patch('/lead-sources/:id', async request => s.leads.update(params(idParam, request).id, request.body));
+  app.patch('/lead-sources/:id', async request => {
+    checkAssignTo(request.body);
+    return s.leads.update(params(idParam, request).id, request.body);
+  });
   app.put('/lead-sources/:id/fields', async request => s.leads.setFields(params(idParam, request).id, request.body));
   app.put('/lead-sources/:id/sheet', async request => s.leads.setSheet(params(idParam, request).id, request.body));
 
@@ -202,7 +233,7 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   app.get('/contacts', async request => {
     const query = request.query as Record<string, unknown>;
     const { page, pageSize } = pageQuery.parse(query);
-    return s.contacts.list(filterFromQuery({ ...query, page: undefined, pageSize: undefined }), page, pageSize);
+    return s.contacts.list(scoped(request, filterFromQuery({ ...query, page: undefined, pageSize: undefined })), page, pageSize);
   });
 
   app.post('/contacts', async (request, reply) => {
@@ -264,10 +295,27 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   app.put('/contacts/:id/lead', async request => {
     const user = request.auth?.user;
     const by = user ? (user.name?.trim() || user.email) : 'API';
-    return s.contacts.setLead(params(idParam, request).id, request.body, by);
+    const { id } = params(idParam, request);
+    const owner = callerLeadOwner(request);
+    // A caller can't tell a lead given to someone else from one that doesn't exist.
+    if (owner !== null && s.contacts.assigneeOf(id) !== owner) throw notFound('Lead');
+    if (isCaller(request) && !s.contacts.get(id).saved) throw notFound('Lead');
+    return s.contacts.setLead(id, request.body, by);
   });
 
-  app.get('/leads/report', async request => s.contacts.leadReport(request.query));
+  app.get('/leads/report', async request => s.contacts.leadReport(scoped(request, { ...(request.query as Record<string, unknown>) })));
+
+  /** Who can be given leads: everyone who can sign in to this business. */
+  app.get('/team', async () => ({ items: team() }));
+
+  /** Give leads to a team member, or to no one (userId null). */
+  app.post('/leads/assign', async request => {
+    const { ids, userId } = z
+      .object({ ids: z.array(z.coerce.number().int().positive()).min(1).max(5000), userId: z.coerce.number().int().positive().nullable() })
+      .parse(request.body);
+    if (userId !== null) checkTeamMember(userId);
+    return { affected: s.contacts.assign(ids, userId) };
+  });
 
   app.delete('/contacts/:id', async request => {
     s.contacts.delete(params(idParam, request).id);

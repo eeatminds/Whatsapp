@@ -24,7 +24,10 @@ import { hashPassword, temporaryPassword, verifyPassword } from './passwords.js'
  * sees only the WhatsApp numbers it created on the shared OpenWA gateway.
  */
 
-export type Role = 'platform_admin' | 'owner' | 'member';
+/** owner: the business's admin (everything). member: everything but billing and team. caller: the Leads page only. */
+export type Role = 'platform_admin' | 'owner' | 'member' | 'caller';
+/** Which leads a caller sees: only those given to them, or all. */
+export type LeadScope = 'assigned' | 'all';
 export type Access = 'active' | 'grace' | 'expired' | 'suspended';
 
 export interface UserRow {
@@ -38,6 +41,7 @@ export interface UserRow {
   session_version: number;
   last_login_at: string | null;
   created_at: string;
+  lead_scope: LeadScope;
 }
 
 export interface TenantRow {
@@ -83,6 +87,7 @@ export interface PublicUser {
   disabled: boolean;
   lastLoginAt: string | null;
   createdAt: string;
+  leadScope: LeadScope;
 }
 
 export const platformSettingsSchema = z.object({
@@ -172,8 +177,16 @@ export const paymentSchema = z.object({
 export const addUserSchema = z.object({
   email,
   name: z.string().trim().max(80).optional(),
-  role: z.enum(['owner', 'member']).default('member'),
+  role: z.enum(['owner', 'member', 'caller']).default('member'),
+  leadScope: z.enum(['assigned', 'all']).default('assigned'),
   password: password.optional(),
+});
+
+/** What a business's admin can change about a team member. */
+export const teamMemberUpdateSchema = z.object({
+  name: z.string().trim().max(80).optional(),
+  role: z.enum(['member', 'caller']).optional(),
+  leadScope: z.enum(['assigned', 'all']).optional(),
 });
 
 const DAY = 86_400_000;
@@ -208,6 +221,7 @@ export function toPublicUser(row: UserRow): PublicUser {
     disabled: !!row.disabled,
     lastLoginAt: row.last_login_at,
     createdAt: row.created_at,
+    leadScope: row.lead_scope ?? 'assigned',
   };
 }
 
@@ -320,19 +334,41 @@ export class Platform {
     this.assertEmailFree(data.email);
     const plain = data.password ?? temporaryPassword();
     const id = this.db.run(
-      'INSERT INTO users (email, name, password_hash, role, tenant_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO users (email, name, password_hash, role, tenant_id, created_at, lead_scope) VALUES (?, ?, ?, ?, ?, ?, ?)',
       data.email,
-      data.name ?? null,
+      data.name || null,
       hashPassword(plain),
       data.role,
       tenant,
       this.now(),
+      data.leadScope,
     ).lastInsertRowid;
     return { user: toPublicUser(this.user(id)!), password: plain };
   }
 
   users(tenant: string): PublicUser[] {
-    return this.db.all<UserRow>('SELECT * FROM users WHERE tenant_id = ? ORDER BY role, email', tenant).map(toPublicUser);
+    return this.db
+      .all<UserRow>(
+        "SELECT * FROM users WHERE tenant_id = ? ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'member' THEN 1 ELSE 2 END, email",
+        tenant,
+      )
+      .map(toPublicUser);
+  }
+
+  /** A business's admin changes a team member's name, role (full access or caller) or which leads they see. */
+  updateTeamMember(tenant: string, userId: number, input: unknown): PublicUser {
+    const data = teamMemberUpdateSchema.parse(input);
+    const user = this.user(userId);
+    if (!user || user.tenant_id !== tenant) throw notFound('User');
+    if (user.role === 'owner' && data.role) throw badRequest("The admin's role can't be changed");
+    this.db.run(
+      'UPDATE users SET name = ?, role = ?, lead_scope = ? WHERE id = ?',
+      data.name !== undefined ? data.name || null : user.name,
+      data.role ?? user.role,
+      data.leadScope ?? user.lead_scope,
+      userId,
+    );
+    return toPublicUser(this.user(userId)!);
   }
 
   /** Set a new password (generated when omitted) and sign the user out everywhere. */

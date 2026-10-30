@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { put, useApi, errorMessage, LEAD_STAGES, type Contact, type ContactFilter, type LeadReport, type LeadStage, type Paged } from '../api';
+import { post, put, useApi, errorMessage, LEAD_STAGES, type Contact, type ContactFilter, type LeadReport, type LeadStage, type Paged, type TeamMember } from '../api';
+import { useSession } from '../session';
+import { isCaller, memberLabel, memberName, useTeam } from '../team';
 import { Button, Card, Empty, ErrorNote, Loading, PageHeader, Pagination, Segmented, TagChip, useToast } from '../components/ui';
 import { Funnel } from '../components/charts';
 import { AddedAt } from './ContactColumns';
@@ -83,6 +85,67 @@ export function StageSelect({ contact, onSaved }: { contact: Contact; onSaved: (
         </option>
       ))}
     </select>
+  );
+}
+
+/** Who a lead is given to; changing it gives the lead to someone else (or to no one). */
+function AssigneeSelect({ contact, team, onSaved }: { contact: Contact; team: TeamMember[]; onSaved: (c: Contact) => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const known = contact.assignedTo === null || team.some(m => m.id === contact.assignedTo);
+  return (
+    <select
+      className={`assignee-select ${contact.assignedTo === null ? 'none' : ''}`}
+      value={contact.assignedTo ?? ''}
+      disabled={busy}
+      aria-label={`Who ${displayName(contact)} is given to`}
+      onChange={async e => {
+        const userId = e.target.value ? Number(e.target.value) : null;
+        setBusy(true);
+        try {
+          await post('/api/leads/assign', { ids: [contact.id], userId });
+          onSaved({ ...contact, assignedTo: userId, assignedAt: userId ? new Date().toISOString() : null });
+        } catch (err) {
+          toast.error(errorMessage(err));
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <option value="">Not given yet</option>
+      {!known && <option value={contact.assignedTo!}>Someone no longer in the team</option>}
+      {team.map(m => (
+        <option key={m.id} value={m.id}>
+          {memberLabel(m)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/** A few of the lead's own details (pincode, city, requirement…) so a caller knows who they are calling. */
+function LeadDetails({ contact }: { contact: Contact }) {
+  const entries = Object.entries(contact.attributes)
+    .filter(([key, value]) => key !== 'sheet_tab' && value.trim())
+    .slice(0, 4);
+  if (entries.length === 0) return null;
+  return (
+    <div className="small muted" style={{ marginTop: 2 }}>
+      {entries.map(([key, value]) => `${key.replace(/_/g, ' ')}: ${value.length > 60 ? `${value.slice(0, 60)}…` : value}`).join(' · ')}
+    </div>
+  );
+}
+
+/** Call or WhatsApp a lead from the phone or computer the caller is on. */
+function ContactLinks({ phone }: { phone: string }) {
+  const digits = phone.replace(/\D/g, '');
+  return (
+    <span className="lead-contact">
+      <a href={`tel:+${digits}`}>📞 Call</a>
+      <a href={`https://wa.me/${digits}`} target="_blank" rel="noreferrer noopener">
+        💬 WhatsApp
+      </a>
+    </span>
   );
 }
 
@@ -258,6 +321,11 @@ function Channels({ report, onChannel, active }: { report: LeadReport; onChannel
 }
 
 export function LeadsPage() {
+  const { me } = useSession();
+  const caller = isCaller(me);
+  const { team, byId } = useTeam(!caller);
+  const toast = useToast();
+  const [selected, setSelected] = useState<Set<number>>(new Set());
   const [params, setParams] = useSearchParams();
   const [preset, setPreset] = useState<Preset>((params.get('range') as Preset) || '30');
   const [custom, setCustom] = useState({ from: params.get('from') ?? '', to: params.get('to') ?? '' });
@@ -267,9 +335,10 @@ export function LeadsPage() {
   const stage = (params.get('stage') as LeadStage | null) ?? undefined;
   const channel = params.get('channel') ?? undefined;
   const origin = (params.get('origin') as Origin | null) ?? undefined;
+  const assignee = caller ? undefined : (params.get('assignee') ?? undefined);
   const range = useMemo(() => rangeFor(preset, custom), [preset, custom]);
 
-  const setFilter = (next: { stage?: LeadStage; channel?: string; origin?: Origin }) => {
+  const setFilter = (next: { stage?: LeadStage; channel?: string; origin?: Origin; assignee?: string }) => {
     const p = new URLSearchParams(params);
     for (const [k, v] of Object.entries(next)) {
       if (v) p.set(k, v);
@@ -277,6 +346,7 @@ export function LeadsPage() {
     }
     setParams(p, { replace: true });
     setPage(1);
+    setSelected(new Set());
   };
 
   useEffect(() => {
@@ -287,11 +357,31 @@ export function LeadsPage() {
     return () => clearTimeout(t);
   }, [search]);
 
-  const reportPath = `/api/leads/report?${query(range)}`;
+  const reportPath = `/api/leads/report?${query({ ...range, assignee })}`;
   const { data: report, error: reportError, loading: reportLoading, reload: reloadReport } = useApi<LeadReport>(reportPath);
-  const filter = { ...range, stage, channel, origin, q: q || undefined } satisfies ContactFilter;
+  const filter = { ...range, stage, channel, origin, assignee, q: q || undefined } satisfies ContactFilter;
   const listPath = `/api/contacts?${query({ ...filter, page, pageSize: 25 })}`;
-  const { data: list, error: listError, setData } = useApi<Paged<Contact>>(listPath);
+  const { data: list, error: listError, setData, reload: reloadList } = useApi<Paged<Contact>>(listPath);
+  const pageIds = list?.items.map(c => c.id) ?? [];
+  const allOnPage = pageIds.length > 0 && pageIds.every(id => selected.has(id));
+  const toggle = (id: number, on: boolean) =>
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const giveSelected = async (userId: number | null) => {
+    try {
+      const { affected } = await post<{ affected: number }>('/api/leads/assign', { ids: [...selected], userId });
+      const who = userId === null ? 'no one' : byId.get(userId) ? memberName(byId.get(userId)!) : 'them';
+      toast.success(`${affected} lead${affected === 1 ? '' : 's'} given to ${who}`);
+      setSelected(new Set());
+      await Promise.all([reloadList(), reloadReport()]);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
 
   // Update the row in place (it stays visible even if it no longer matches the stage filter
   // until the next reload), and refresh the numbers above.
@@ -306,12 +396,20 @@ export function LeadsPage() {
   return (
     <div className="page">
       <PageHeader
-        title="Leads"
-        description="Every lead in one place: where it came from, its stage, and what was said on the call."
+        title={caller ? 'Your leads' : 'Leads'}
+        description={
+          caller
+            ? me.user?.leadScope === 'all'
+              ? 'Every lead: call them, then set the stage and note what was said.'
+              : 'The leads given to you: call them, then set the stage and note what was said.'
+            : 'Every lead in one place: where it came from, who it is given to, its stage, and what was said on the call.'
+        }
         actions={
-          <a className="btn" href={`/api/contacts/export.csv?${query(filter)}`}>
-            <IconDownload size={16} /> Export
-          </a>
+          caller ? undefined : (
+            <a className="btn" href={`/api/contacts/export.csv?${query(filter)}`}>
+              <IconDownload size={16} /> Export
+            </a>
+          )
         }
       />
       <div className="row wrap lead-range">
@@ -329,12 +427,13 @@ export function LeadsPage() {
       {report && (
         <>
           <ScoreBoard report={report} active={stage} onStage={s => setFilter({ stage: s })} />
-          <div className="grid cols-2">
+          {/* Callers get straight to their list; the channel and funnel charts are for the admin. */}
+          {!caller && <div className="grid cols-2">
             <Channels report={report} active={channel} onChannel={key => setFilter({ channel: key })} />
             <Card title="Lead funnel" subtitle="How far leads from this period have got.">
               <Funnel stages={report.funnel.map(f => ({ label: f.label, value: f.count }))} caption="Share of all leads" baseLabel="Of total" />
             </Card>
-          </div>
+          </div>}
         </>
       )}
 
@@ -358,7 +457,18 @@ export function LeadsPage() {
                 </option>
               ))}
             </select>
-            <OriginSelect value={origin} onChange={value => setFilter({ origin: value })} />
+            {report && <OriginSelect value={origin} home={report.homeCountry} onChange={value => setFilter({ origin: value })} />}
+            {!caller && team.length > 0 && (
+              <select className="select sm" style={{ width: 'auto' }} value={assignee ?? ''} onChange={e => setFilter({ assignee: e.target.value || undefined })} aria-label="Given to">
+                <option value="">Given to anyone</option>
+                <option value="none">Not given yet</option>
+                {team.map(m => (
+                  <option key={m.id} value={m.id}>
+                    Given to {memberName(m)}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
           <span className="small muted nowrap">
             {list ? `${formatNumber(list.total)} lead${list.total === 1 ? '' : 's'}` : ''}
@@ -366,10 +476,39 @@ export function LeadsPage() {
           </span>
         </div>
         <ErrorNote error={listError} />
+        {!caller && selected.size > 0 && (
+          <div className="lead-bulk" role="region" aria-label="Selected leads">
+            <strong>
+              {selected.size} selected
+            </strong>
+            <select
+              className="select sm"
+              style={{ width: 'auto' }}
+              value=""
+              aria-label="Give the selected leads to"
+              onChange={e => {
+                if (e.target.value) void giveSelected(e.target.value === 'none' ? null : Number(e.target.value));
+              }}
+            >
+              <option value="">Give to…</option>
+              {team.map(m => (
+                <option key={m.id} value={m.id}>
+                  {memberLabel(m)}
+                </option>
+              ))}
+              <option value="none">No one (take back)</option>
+            </select>
+            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+              Clear
+            </Button>
+          </div>
+        )}
         {list && list.items.length === 0 ? (
-          <Empty title={report?.total ? 'No leads match these filters' : 'No leads yet'}>
+          <Empty title={caller ? (report?.total ? 'No leads match these filters' : 'No leads given to you yet') : report?.total ? 'No leads match these filters' : 'No leads yet'}>
             {report?.total ? (
               'Try another stage, channel or date range.'
+            ) : caller ? (
+              'Your admin gives leads out from the Leads page. They show up here as soon as they do.'
             ) : (
               <>
                 Leads appear here as they come in. <Link to="/automations?tab=leads">Connect a Google Sheet or website form</Link>, or{' '}
@@ -384,8 +523,26 @@ export function LeadsPage() {
                 <table className="table leads-table">
                   <thead>
                     <tr>
+                      {!caller && (
+                        <th style={{ width: 32 }}>
+                          <input
+                            type="checkbox"
+                            aria-label="Select all leads on this page"
+                            checked={allOnPage}
+                            onChange={e => setSelected(prev => {
+                              const next = new Set(prev);
+                              for (const id of pageIds) {
+                                if (e.target.checked) next.add(id);
+                                else next.delete(id);
+                              }
+                              return next;
+                            })}
+                          />
+                        </th>
+                      )}
                       <th>Lead</th>
                       <th>Channel</th>
+                      {!caller && team.length > 0 && <th>Given to</th>}
                       <th>Lead stage</th>
                       <th>Lead remark</th>
                       <th>Added to WA Reach</th>
@@ -393,12 +550,23 @@ export function LeadsPage() {
                   </thead>
                   <tbody>
                     {list.items.map(c => (
-                      <tr key={c.id}>
+                      <tr key={c.id} className={selected.has(c.id) ? 'selected' : undefined}>
+                        {!caller && (
+                          <td>
+                            <input type="checkbox" aria-label={`Select ${displayName(c)}`} checked={selected.has(c.id)} onChange={e => toggle(c.id, e.target.checked)} />
+                          </td>
+                        )}
                         <td>
-                          <Link to={`/inbox/${c.id}`} className="strong">
-                            {displayName(c)}
-                          </Link>
+                          {caller ? (
+                            <span className="strong">{displayName(c)}</span>
+                          ) : (
+                            <Link to={`/inbox/${c.id}`} className="strong">
+                              {displayName(c)}
+                            </Link>
+                          )}
                           <div className="small muted mono">{formatPhone(c.phone)}</div>
+                          {caller && <LeadDetails contact={c} />}
+                          {caller && <ContactLinks phone={c.phone} />}
                           {c.tags.length > 0 && (
                             <div className="row wrap" style={{ gap: 4, marginTop: 4 }}>
                               {c.tags.slice(0, 3).map(t => (
@@ -408,6 +576,11 @@ export function LeadsPage() {
                           )}
                         </td>
                         <td className="secondary small">{c.channel}</td>
+                        {!caller && team.length > 0 && (
+                          <td>
+                            <AssigneeSelect contact={c} team={team} onSaved={onSaved} />
+                          </td>
+                        )}
                         <td>
                           <StageSelect contact={c} onSaved={onSaved} />
                         </td>

@@ -17,17 +17,18 @@ export function flag(code: string | null | undefined): string {
 }
 
 /** What numbers from the business's own country are called: "Indian" for India, else the country's name. */
-export function useLocalLabel(): string {
-  const { data } = useApi<Settings>('/api/settings');
-  const home = data?.defaultCountry ?? 'IN';
+export function useLocalLabel(known?: string | null): string {
+  // Pages that already know the home country (callers can't read the settings) skip the request.
+  const { data } = useApi<Settings>(known ? null : '/api/settings');
+  const home = known ?? data?.defaultCountry ?? 'IN';
   return home === 'IN' ? 'Indian' : countryName(home);
 }
 
 export type Origin = 'local' | 'international';
 
 /** All numbers / Indian numbers / International numbers. */
-export function OriginSelect({ value, onChange }: { value: Origin | undefined; onChange: (value: Origin | undefined) => void }) {
-  const local = useLocalLabel();
+export function OriginSelect({ value, onChange, home }: { value: Origin | undefined; onChange: (value: Origin | undefined) => void; home?: string | null }) {
+  const local = useLocalLabel(home);
   return (
     <select
       className="select sm"

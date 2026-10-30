@@ -71,6 +71,15 @@ function Login({ brand, onLogin }: { brand: string; onLogin: () => void }) {
   );
 }
 
+function CallerRoutes() {
+  return (
+    <Routes>
+      <Route path="/leads" element={<LeadsPage />} />
+      <Route path="*" element={<Navigate to="/leads" replace />} />
+    </Routes>
+  );
+}
+
 function BusinessRoutes() {
   return (
     <Routes>
@@ -135,9 +144,7 @@ function App() {
           <AdminRoutes />
         </AdminLayout>
       ) : (
-        <Layout onLogout={logout}>
-          <BusinessRoutes />
-        </Layout>
+        <Layout onLogout={logout}>{me.user?.role === 'caller' ? <CallerRoutes /> : <BusinessRoutes />}</Layout>
       )}
     </SessionContext.Provider>
   );

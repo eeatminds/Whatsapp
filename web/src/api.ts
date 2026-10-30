@@ -132,6 +132,9 @@ export interface Contact {
   saved: boolean;
   /** The number's country (ISO code), when known. */
   country: string | null;
+  /** The team member this lead is given to, if any. */
+  assignedTo: number | null;
+  assignedAt: string | null;
   createdAt: string;
   updatedAt: string;
   tags: Tag[];
@@ -147,6 +150,7 @@ export const LEAD_STAGES: Array<{ value: LeadStage; label: string }> = [
 
 export interface LeadReport {
   range: { from: string | null; to: string | null };
+  homeCountry: string;
   total: number;
   byStage: Record<LeadStage, number>;
   channels: Array<{ key: string; name: string; leads: number } & Record<LeadStage, number>>;
@@ -175,6 +179,8 @@ export interface ContactFilter {
   to?: string;
   /** Numbers from the business's own country, or from anywhere else. */
   origin?: 'local' | 'international';
+  /** Who leads are given to: a team member's id, or "none". */
+  assignee?: string;
   ids?: number[];
 }
 
@@ -544,16 +550,31 @@ export interface TenantInfo {
   createdAt: string;
 }
 
+export type UserRole = 'platform_admin' | 'owner' | 'member' | 'caller';
+
 export interface PlatformUser {
   id: number;
   email: string;
   name: string | null;
-  role: 'platform_admin' | 'owner' | 'member';
+  /** owner: the business's admin. member: everything but billing and team. caller: the Leads page only. */
+  role: UserRole;
   tenantId: string | null;
   disabled: boolean;
   lastLoginAt: string | null;
   createdAt: string;
+  /** Which leads a caller sees: only those given to them, or all. */
+  leadScope: 'assigned' | 'all';
 }
+
+/** Someone who can sign in to the business, and so can be given leads. */
+export interface TeamMember {
+  id: number;
+  name: string | null;
+  email: string;
+  role: 'owner' | 'member' | 'caller';
+}
+
+export const ROLE_LABEL: Record<UserRole, string> = { platform_admin: 'Platform admin', owner: 'Admin', member: 'Team member', caller: 'Caller' };
 
 export interface Brand {
   brandName: string;

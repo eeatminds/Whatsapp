@@ -428,4 +428,12 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE official_templates ADD COLUMN quality TEXT;
   ALTER TABLE official_templates ADD COLUMN updated_at TEXT;
   `,
+  // 15: leads given to a team member (a caller, usually) to follow up, and the turn a lead source
+  // that shares new leads between several people is on.
+  `
+  ALTER TABLE contacts ADD COLUMN assigned_to INTEGER;
+  ALTER TABLE contacts ADD COLUMN assigned_at TEXT;
+  CREATE INDEX contacts_assigned ON contacts (assigned_to);
+  ALTER TABLE lead_sources ADD COLUMN assign_next INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
