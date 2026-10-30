@@ -254,6 +254,10 @@ function ConnectSheet({ source }: { source: LeadSource }) {
       <div className="row small secondary" style={{ gap: 8 }}>
         <span className="spinner" style={{ width: 14, height: 14 }} /> Waiting for your sheet: its tabs appear here as soon as you click Run.
       </div>
+      <p className="hint">
+        Sheet shows “Error: Unknown lead link”? It still has an old script or an old link. Pasting this script fixes it. Rows that failed are then marked “Not sent” instead of
+        messaging old leads all at once, and you can add them as contacts from here.
+      </p>
     </div>
   );
 }
@@ -322,12 +326,35 @@ function SheetTabs({ source }: { source: LeadSource }) {
         : { ...c, autoNew, selected: source.sheet.tabs.filter(t => !c.excluded.includes(t)), excluded: [] },
     );
   const reading = source.sheet.tabs.filter(isOn).length;
+  // The script checks in every minute; a long silence means the link or the script stopped working.
+  const quiet = Date.now() - new Date(source.sheet.syncedAt).getTime() > 15 * 60_000;
 
   return (
     <div className="stack">
+      {quiet && (
+        <Callout tone="warn">
+          <div className="stack tight">
+            <span>
+              Your sheet last checked in {relativeTime(source.sheet.syncedAt)}, so new rows are not coming in. If its WA Status column shows an error such as “Unknown lead
+              link”, copy the script again, paste it over the old one (Extensions → Apps Script), Save, and Run <code>setup</code>.
+            </span>
+            {source.url && (
+              <div>
+                <CopyScript url={source.url} />
+              </div>
+            )}
+          </div>
+        </Callout>
+      )}
       <div className="row between wrap" style={{ gap: 8 }}>
         <span className="small secondary">
-          <IconCheck size={14} style={{ color: 'var(--brand)', verticalAlign: '-2px' }} /> Connected: your sheet checked in {relativeTime(source.sheet.syncedAt)}.
+          {quiet ? (
+            <>Last check-in {relativeTime(source.sheet.syncedAt)}.</>
+          ) : (
+            <>
+              <IconCheck size={14} style={{ color: 'var(--brand)', verticalAlign: '-2px' }} /> Connected: your sheet checked in {relativeTime(source.sheet.syncedAt)}.
+            </>
+          )}
         </span>
         <span className="small muted" aria-live="polite">
           {state === 'saving' ? 'Saving…' : state === 'saved' ? 'Saved. Your sheet picks this up within a minute.' : ''}
@@ -629,7 +656,11 @@ function SourceDetail({ sourceId, onClose, onEdit, onChanged }: { sourceId: numb
             <Button
               variant="danger"
               onClick={async () => {
-                if (await confirm('Reset this link?', 'The current link stops working immediately. You will need to paste the new one wherever you used the old one.', { confirmLabel: 'Reset link', danger: true })) {
+                const after =
+                  source.kind === 'google_sheet'
+                    ? 'Copy the script again and paste it over the old one in your sheet (Extensions → Apps Script), or the sheet stops sending leads.'
+                    : 'You will need to paste the new one wherever you used the old one.';
+                if (await confirm('Reset this link?', `The current link stops working immediately. ${after}`, { confirmLabel: 'Reset link', danger: true })) {
                   await post(`/api/lead-sources/${source.id}/reset-link`);
                   toast.success('New link created');
                   await reload();

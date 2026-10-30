@@ -385,7 +385,10 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
       const { tenantId, token } = request.params as { tenantId: string; token: string };
       const runtime = metaRuntime(tenantId);
       const source = runtime?.services.leads.byToken(token);
-      if (!runtime || !source) return reply.status(404).send({ ok: false, error: 'Unknown lead link' });
+      // Starts with "Unknown lead link": the sheet script looks for that to tell a stale link apart.
+      if (!runtime || !source) {
+        return reply.status(404).send({ ok: false, error: 'Unknown lead link. It was reset or deleted: copy the current one from WA Reach (Lead sources)' });
+      }
       if (!source.active) return reply.status(403).send({ ok: false, error: 'This lead link is switched off' });
       // A Google Sheet script checking in: which tabs to read (not a lead, so not rate limited as one).
       const raw: unknown = request.body ?? {};

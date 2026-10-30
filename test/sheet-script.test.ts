@@ -157,4 +157,75 @@ describe('Google Sheet script', () => {
     s = await run();
     expect(s.calls).toHaveLength(1);
   }, 60_000);
+
+  it('recovers a sheet whose old script had a broken link, without messaging a year of old leads', async () => {
+    const welcome = (
+      await env.api('POST', '/api/sequences', { name: 'Welcome', trigger: { type: 'manual' }, steps: [{ delayMinutes: 0, body: 'Hi {{first_name|there}}!' }] })
+    ).body;
+    const source = (await env.api('POST', '/api/lead-sources', { name: 'Naveen Tile Forms', kind: 'google_sheet', actions: { sequenceId: welcome.id } })).body;
+    await env.api('PUT', `/api/lead-sources/${source.id}/fields`, { fieldMap: { text_870: 'name' } });
+    await env.app.listen({ host: '127.0.0.1', port: 0 });
+    const { port } = env.app.server.address() as { port: number };
+    const link = source.url.replace('https://reach.example.com', `http://127.0.0.1:${port}`);
+    const goodScript = join(dir, 'good.js');
+    const staleScript = join(dir, 'stale.js');
+    writeFileSync(goodScript, sheetScript(link));
+    writeFileSync(staleScript, sheetScript(link.replace(/[A-Za-z0-9]{32}$/, 'x'.repeat(32))));
+    const statePath = join(dir, 'state.json');
+    const run = (script: string, entry: SheetState['entry'], s: SheetState) => {
+      writeFileSync(statePath, JSON.stringify({ ...s, entry, calls: [] }));
+      return new Promise<SheetState>((resolve, reject) =>
+        execFile(process.execPath, [join(__dirname, 'fixtures', 'apps-script-harness.mjs'), script, statePath], (error, _out, stderr) =>
+          error ? reject(new Error(stderr || String(error))) : resolve(JSON.parse(readFileSync(statePath, 'utf8'))),
+        ),
+      );
+    };
+    const status = (s: SheetState) => s.sheets[0].values.slice(1).map(r => r[5] ?? '');
+
+    // What the very first script left behind: it tried every row with a link WA Reach didn't know.
+    const UNKNOWN = 'Error: Unknown lead link';
+    const sheet: SheetState = {
+      sheets: [
+        {
+          name: 'Form responses',
+          id: 7,
+          values: [
+            [...HEAD, 'WA Status'],
+            ['Date', 'Name', 'Phone', 'Pincode', 'Country code', UNKNOWN],
+            row('2025-10-09', 'Kuppanna', '9180066664', '515001', UNKNOWN),
+            row('2025-11-01', 'Rahul', '9195823615', '560075', 'Error: Too many leads at once; try again in a minute'),
+            row('2025-12-02', 'Kamran', '6006703849', '192303', 'Error 502'),
+            row('2026-01-02', 'Shrikantha', '9353272326', '581320', 'Sent to WA Reach'),
+            ['', 'No number', '', '', '', 'Error: No phone number in this lead'],
+          ],
+        },
+      ],
+      props: {},
+      calls: [],
+      triggers: [{ handler: 'sendNewLeads', everyMinutes: 1 }],
+    };
+
+    // A stale link stops with a message saying what to do, by hand or on the timer, and marks nothing.
+    await expect(run(staleScript, 'setup', sheet)).rejects.toThrow(/does not recognise the link in this script.*Copy script/s);
+    await expect(run(staleScript, 'sendNewLeads', sheet)).rejects.toThrow(/does not recognise the link/);
+    const notFound = await env.app.inject({ method: 'POST', url: `/hooks/leads/${env.tenantId}/${'x'.repeat(32)}`, payload: { phone: '9876543210' } });
+    expect(notFound.json().error).toMatch(/^Unknown lead link\. It was reset or deleted/);
+
+    // With the current script, rows that never reached WA Reach count as "already there": no messages.
+    let s = await run(goodScript, 'setup', sheet);
+    expect(s.triggers).toHaveLength(1);
+    expect(s.calls).toEqual([{ _wa_reach: 'sync', tabs: ['Form responses'] }]);
+    const NOT_SENT = 'Not sent: was in the sheet before WA Reach';
+    expect(status(s)).toEqual([NOT_SENT, NOT_SENT, NOT_SENT, NOT_SENT, 'Sent to WA Reach', 'Error: No phone number in this lead']);
+    expect(env.core.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM contacts WHERE saved = 1')!.n).toBe(0);
+
+    // From then on new rows are sent, and a row that only hit a server hiccup is tried again.
+    s.sheets[0].values.push(row('2026-10-30', 'Asha', '9845012345', '560001'));
+    s.sheets[0].values[4][5] = 'Will retry: WA Reach did not answer (502)';
+    s = await run(goodScript, 'sendNewLeads', s);
+    expect(s.calls.map(c => c['text-870'] ?? c._wa_reach)).toEqual(['sync', 'Kamran', 'Asha']);
+    expect(status(s)[3]).toBe('Sent to WA Reach');
+    expect(status(s)[6]).toBe('Sent to WA Reach');
+    expect(env.core.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM sequence_enrollments')!.n).toBe(2);
+  }, 60_000);
 });
