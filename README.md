@@ -260,14 +260,10 @@ Use the `env.txt` inside the backup as your `.env` on a new server. The app secr
 For a server set up from the earlier repository (folder `~/Shreyas/wa-reach`). Data, WhatsApp logins and the HTTPS certificate stay where they are: they live in Docker volumes named after the project (`wa-reach`), not in the folder. WA Reach is offline for the minute the rebuild takes.
 
 ```bash
-git clone https://github.com/eeatminds/Whatsapp ~/whatsapp
-cp ~/Shreyas/wa-reach/.env ~/whatsapp/.env
-[ -d ~/Shreyas/wa-reach/backups ] && cp -a ~/Shreyas/wa-reach/backups ~/whatsapp/
-cd ~/whatsapp && bash deploy/update.sh
-crontab -l 2>/dev/null | sed 's#/Shreyas/wa-reach#/whatsapp#g' | crontab -
+git clone https://github.com/eeatminds/Whatsapp ~/whatsapp && bash ~/whatsapp/deploy/switch-repo.sh
 ```
 
-The last line points the automatic update and backup jobs (if you set them up) at the new folder. Check with `crontab -l`. Once the dashboard works, the old folder can go: `rm -rf ~/Shreyas`.
+It copies `.env` (and local backups) from the old folder, rebuilds from `~/whatsapp`, and points the automatic update and backup jobs at the new folder. Once the dashboard works, the old folder can go: `rm -rf ~/Shreyas`.
 
 ### Moving to a new server
 
