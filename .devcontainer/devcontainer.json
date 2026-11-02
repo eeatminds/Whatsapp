@@ -1,0 +1,15 @@
+{
+  // One-click test environment for WA Reach on GitHub Codespaces:
+  // runs WA Reach + the OpenWA gateway with Docker, then opens the dashboard.
+  "name": "WA Reach",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "hostRequirements": { "cpus": 2, "memory": "8gb" },
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": { "label": "WA Reach", "onAutoForward": "openBrowser" }
+  },
+  "postStartCommand": "bash deploy/codespace-start.sh"
+}

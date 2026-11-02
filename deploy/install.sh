@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # First-time setup of WA Reach on a fresh Ubuntu server, with HTTPS on your own domain.
 #
-#   git clone --depth 1 -b claude/sweet-fermat-9qszg4 https://github.com/digitalmarketing-RNS/Shreyas ~/Shreyas
-#   cd ~/Shreyas/wa-reach && bash deploy/install.sh
+#   git clone https://github.com/eeatminds/Whatsapp ~/whatsapp
+#   cd ~/whatsapp && bash deploy/install.sh
 #
 # Asks for your domain and admin email (or: bash deploy/install.sh wa.example.com you@example.com),
 # installs Docker if needed, writes .env with strong random secrets, opens the firewall for HTTPS

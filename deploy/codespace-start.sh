@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts WA Reach + OpenWA inside a GitHub Codespace (called by .devcontainer/devcontainer.json).
-# First run writes wa-reach/.env with generated secrets and prints the admin login.
+# First run writes .env with generated secrets and prints the admin login.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -37,6 +37,6 @@ cat <<MSG
  Open:      ${url:-the "Ports" tab -> port 3000 -> globe icon}
  Email:     ${email}
  Password:  ${password}
- (Saved in wa-reach/.env. Show it again: grep ADMIN wa-reach/.env)
+ (Saved in .env. Show it again: grep ADMIN .env)
 ============================================================
 MSG

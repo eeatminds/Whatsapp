@@ -116,7 +116,7 @@ The demo runs a simulated OpenWA gateway with sample contacts, templates, automa
 
 ### Try it with real WhatsApp in your browser (GitHub Codespaces)
 
-No install needed. On GitHub, open the repository, choose this branch, then **Code → Codespaces → Create codespace**. The setup starts WA Reach and OpenWA, opens the dashboard, and prints an admin login in the terminal (also saved in `wa-reach/.env`). Scan the QR code from **WhatsApp numbers** as usual.
+No install needed. On GitHub, open the repository, then **Code → Codespaces → Create codespace**. The setup starts WA Reach and OpenWA, opens the dashboard, and prints an admin login in the terminal (also saved in `.env`). Scan the QR code from **WhatsApp numbers** as usual.
 
 A codespace stops after 30 minutes idle and the WhatsApp link pauses with it. It's meant for testing; use a server to run it for customers.
 
@@ -160,8 +160,8 @@ You need a Linux VPS (Ubuntu 22.04+ works well) and a domain or subdomain, e.g. 
 **Quickest way** (fresh Ubuntu server, logged in as root): point the domain's DNS A record at the server, then run
 
 ```bash
-git clone --depth 1 -b claude/sweet-fermat-9qszg4 https://github.com/digitalmarketing-RNS/Shreyas ~/Shreyas
-cd ~/Shreyas/wa-reach && bash deploy/install.sh
+git clone https://github.com/eeatminds/Whatsapp ~/whatsapp
+cd ~/whatsapp && bash deploy/install.sh
 ```
 
 `install.sh` asks for the domain and your admin email. It installs Docker, writes `.env` with random secrets and a memory limit sized to the server, opens the firewall for HTTPS, starts everything and prints your admin password. The steps below do the same by hand.
@@ -204,10 +204,10 @@ To update later: `git pull`, then run the same `docker compose … up -d --build
 
 `deploy/backup.sh` takes a consistent snapshot of every business's database and media while the app keeps running. It then packs the snapshot with a copy of `.env`, optionally encrypts it, and uploads it to Google Drive with [rclone](https://rclone.org). Old uploads are deleted after 14 days, and the server keeps the last 3. The admin overview shows the last backup, and a failed or missed backup triggers a health alert.
 
-**Keep backups only on this server** (no Google Drive, no rclone): copies go to `wa-reach/backups/`, and the newest 7 are kept.
+**Keep backups only on this server** (no Google Drive, no rclone): copies go to `backups/` in the WA Reach folder, and the newest 7 are kept.
 
 ```bash
-cd ~/Shreyas/wa-reach && echo 'BACKUP_REMOTE=local' >> .env && bash deploy/backup.sh
+cd ~/whatsapp && echo 'BACKUP_REMOTE=local' >> .env && bash deploy/backup.sh
 (crontab -l 2>/dev/null; echo "30 20 * * * cd $PWD && bash deploy/backup.sh >> backup.log 2>&1") | crontab -
 ```
 
@@ -255,6 +255,20 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
 Use the `env.txt` inside the backup as your `.env` on a new server. The app secret that unlocks saved Meta access tokens is restored with the data folder, or comes from `APP_SECRET` in `.env` if you set one. Skip the `openssl` line for backups without a passphrase.
 
+### Switching a running server to this repository
+
+For a server set up from the earlier repository (folder `~/Shreyas/wa-reach`). Data, WhatsApp logins and the HTTPS certificate stay where they are: they live in Docker volumes named after the project (`wa-reach`), not in the folder. WA Reach is offline for the minute the rebuild takes.
+
+```bash
+git clone https://github.com/eeatminds/Whatsapp ~/whatsapp
+cp ~/Shreyas/wa-reach/.env ~/whatsapp/.env
+[ -d ~/Shreyas/wa-reach/backups ] && cp -a ~/Shreyas/wa-reach/backups ~/whatsapp/
+cd ~/whatsapp && bash deploy/update.sh
+crontab -l 2>/dev/null | sed 's#/Shreyas/wa-reach#/whatsapp#g' | crontab -
+```
+
+The last line points the automatic update and backup jobs (if you set them up) at the new folder. Check with `crontab -l`. Once the dashboard works, the old folder can go: `rm -rf ~/Shreyas`.
+
 ### Moving to a new server
 
 `deploy/migrate.sh` moves everything: every business's data, `.env`, the WhatsApp logins (so QR-linked numbers usually don't need scanning again), the HTTPS certificate, the Google Drive backup login and the cron jobs. Do it at a quiet time; WA Reach is offline for the 10–30 minutes the move takes.
@@ -263,7 +277,7 @@ Use the `env.txt` inside the backup as your `.env` on a new server. The app secr
 2. **Old server:**
 
    ```bash
-   cd ~/Shreyas/wa-reach && bash deploy/update.sh   # gets the move script
+   cd ~/whatsapp && bash deploy/update.sh   # gets the move script
    bash deploy/migrate.sh export
    scp ~/wa-reach-move.tar.gz root@NEW_SERVER_IP:~/
    ```
