@@ -1,0 +1,62 @@
+# Builds the WA Reach Calls Android app when its code changes.
+#
+# With the signing key saved as repository secrets (Settings > Secrets and variables > Actions):
+#   WA_REACH_KEYSTORE_B64       the .jks key file, base64-encoded
+#   WA_REACH_KEYSTORE_PASSWORD  its password
+# the APK is signed with the same key as the copy on the phones (so it installs as an update)
+# and committed to web/public/downloads, where WA Reach serves it. Without them it is only
+# built, to check the code compiles.
+name: Android app
+
+on:
+  push:
+    paths: ['android/**', '.github/workflows/android.yml']
+  pull_request:
+    paths: ['android/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Build the APK
+        working-directory: android
+        env:
+          KEYSTORE_B64: ${{ secrets.WA_REACH_KEYSTORE_B64 }}
+          WA_REACH_KEYSTORE_PASSWORD: ${{ secrets.WA_REACH_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$WA_REACH_KEYSTORE_PASSWORD" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/wa-reach-calls.jks"
+            export WA_REACH_KEYSTORE="$RUNNER_TEMP/wa-reach-calls.jks"
+            echo "SIGNED=true" >> "$GITHUB_ENV"
+          else
+            echo "::notice::No signing key in the repository secrets: building an unsigned APK to check the code."
+          fi
+          ./gradlew assembleRelease lintRelease --no-daemon
+          rm -f "$RUNNER_TEMP/wa-reach-calls.jks"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wa-reach-calls
+          path: android/app/build/outputs/apk/release/*.apk
+
+      - name: Ship the signed APK with WA Reach
+        if: env.SIGNED == 'true' && github.event_name != 'pull_request'
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk web/public/downloads/wa-reach-calls.apk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/public/downloads/wa-reach-calls.apk
+          if git diff --cached --quiet; then echo "APK unchanged"; exit 0; fi
+          git commit -m "WA Reach Calls: rebuilt APK [skip ci]"
+          git push

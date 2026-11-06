@@ -346,6 +346,57 @@ async function main(): Promise<void> {
     if (i % 5 !== 4) s.contacts.assign([id], callers[i % 2].id);
   });
   s.leads.update(sources[0].id, { ...sources[0], actions: { ...sources[0].actions, assignTo: callers.map(c => c.id) } });
+  // Their phones have the WA Reach Calls app (connected a month ago): calls with leads, some recorded.
+  // A couple of remarks have no call behind them, so the warning shows.
+  offset = -30 * 86_400_000;
+  const phones = callers.map((c, i) => {
+    const { secret } = s.calls.connect(c.id, 1, i === 0 ? 'Samsung Galaxy A15' : 'Redmi Note 13');
+    return s.calls.device(secret)!;
+  });
+  offset = 0;
+  const tone = (seconds: number) => {
+    // A short, quiet tone as a stand-in recording (WAV, 8 kHz mono).
+    const samples = 8000 * seconds;
+    const wav = Buffer.alloc(44 + samples * 2);
+    wav.write('RIFF', 0, 'latin1');
+    wav.writeUInt32LE(36 + samples * 2, 4);
+    wav.write('WAVEfmt ', 8, 'latin1');
+    wav.writeUInt32LE(16, 16);
+    wav.writeUInt16LE(1, 20);
+    wav.writeUInt16LE(1, 22);
+    wav.writeUInt32LE(8000, 24);
+    wav.writeUInt32LE(16000, 28);
+    wav.writeUInt16LE(2, 32);
+    wav.writeUInt16LE(16, 34);
+    wav.write('data', 36, 'latin1');
+    wav.writeUInt32LE(samples * 2, 40);
+    for (let n = 0; n < samples; n++) wav.writeInt16LE(Math.round(Math.sin((2 * Math.PI * 440 * n) / 8000) * 3000), 44 + n * 2);
+    return wav;
+  };
+  leadIds.forEach((id, i) => {
+    const owner = runtime.core.db.get<{ assigned_to: number | null; lead_remark_at: string | null; created_at: string; phone: string }>(
+      'SELECT assigned_to, lead_remark_at, created_at, phone FROM contacts WHERE id = ?',
+      id,
+    );
+    if (!owner?.assigned_to || i % 7 === 3) return;
+    const device = phones[callers.findIndex(c => c.id === owner.assigned_to)];
+    const at = owner.lead_remark_at ? Date.parse(owner.lead_remark_at) - 25 * 60_000 : Date.parse(owner.created_at) + 2 * 3_600_000;
+    const calls = owner.lead_remark_at
+      ? [
+          { number: owner.phone, type: 2, startedAt: at - 86_400_000, duration: 0 },
+          { number: owner.phone, type: 2, startedAt: at, duration: 45 + Math.floor(random() * 360) },
+        ]
+      : [{ number: owner.phone, type: 2, startedAt: at, duration: 0 }];
+    s.calls.receive(device, { device: { appVersion: '1.0.0', recordings: 'allowed' }, calls });
+  });
+  // The phones upload recordings for most answered calls; some dialers didn't record.
+  for (const device of phones) {
+    for (const { id } of runtime.core.db.all<{ id: number }>("SELECT id FROM calls WHERE device_id = ? AND recording_status = 'pending'", device.id)) {
+      if (id % 3 === 0) s.calls.noRecording(device, id);
+      else s.calls.saveRecording(device, id, tone(2));
+    }
+  }
+  for (const device of phones) s.calls.touch(device);
   // Someone new writes in: Inbox only until the business adds them.
   offset = -20 * 60_000;
   await s.inbound.handle({

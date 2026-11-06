@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WA Reach Calls</string>
+    <string name="tagline">Shows your WA Reach admin the calls you make to leads: when, and for how long.</string>
+
+    <string name="signin_title">Sign in</string>
+    <string name="signin_help">Use the same email and password you use for WA Reach. Ask your admin if you don\'t have them.</string>
+    <string name="server_label">WA Reach address</string>
+    <string name="email_label">Email</string>
+    <string name="password_label">Password</string>
+    <string name="connect">Connect this phone</string>
+    <string name="connecting">Connecting…</string>
+    <string name="error_fill">Enter your email and password.</string>
+
+    <string name="connected_as">Connected to %1$s as %2$s</string>
+    <string name="perm_calls_ok">✅ Call history: allowed</string>
+    <string name="perm_calls_needed">❌ Call history: not allowed. Calls can\'t be sent.</string>
+    <string name="perm_recordings_ok">✅ Call recordings: allowed</string>
+    <string name="perm_recordings_needed">⚠️ Call recordings: not allowed (optional)</string>
+    <string name="perm_background_ok">✅ Runs in the background</string>
+    <string name="perm_background_needed">⚠️ The phone may stop this app in the background</string>
+    <string name="allow">Allow</string>
+    <string name="last_sent">Last sent to WA Reach: %1$s</string>
+    <string name="never_sent">Not sent yet</string>
+    <string name="kept_today">Calls with leads today: %1$d</string>
+    <string name="send_now">Send now</string>
+    <string name="sending">Sending…</string>
+    <string name="sign_out">Sign out</string>
+    <string name="sign_out_confirm">Sign this phone out? Your calls stop going to WA Reach, and your admin will see the phone is no longer connected.</string>
+    <string name="cancel">Cancel</string>
+    <string name="update_available">A new version (%1$s) is available. Tap to download.</string>
+    <string name="privacy">Only calls with your business\'s leads are kept. WA Reach ignores every other call on this phone. Recordings are sent only for calls with leads, and only if this phone\'s dialer records calls.</string>
+    <string name="recordings_help">Recordings come from the phone\'s own dialer. Turn on call recording in the Phone app\'s settings if your phone has it.</string>
+
+    <string name="error_no_call_permission">Allow call history access in WA Reach Calls.</string>
+    <string name="error_offline">Couldn\'t reach WA Reach. It will try again when the phone is online.</string>
+</resources>

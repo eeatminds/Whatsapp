@@ -19,6 +19,7 @@ import { AnalyticsService } from './analytics.js';
 import { OfficialNumbersService } from './official.js';
 import { LeadsService } from './leads.js';
 import { ChatMediaService } from './chat-media.js';
+import { CallsService } from './calls.js';
 
 export function createServices(core: Core, options: { random?: () => number; scope?: SessionScope } = {}) {
   const bus = new Bus();
@@ -40,9 +41,10 @@ export function createServices(core: Core, options: { random?: () => number; sco
   const test = core.config.nodeEnv === 'test';
   const inbound = new InboundService(core, settings, contacts, messages, campaigns, autoReplies, outbox, sessions, bus, official, test ? 30 : 15_000);
   const chatMedia = new ChatMediaService(core, messages, sessions);
+  const calls = new CallsService(core, settings, contacts);
   const dispatcher = new Dispatcher(
     core,
-    { settings, sessions, campaigns, sequences, messages, outbox, contacts, sender, inbound, autoReplies, chatMedia, official },
+    { settings, sessions, campaigns, sequences, messages, outbox, contacts, sender, inbound, autoReplies, chatMedia, official, calls },
     options.random,
   );
   const analytics = new AnalyticsService(core, settings, contacts, messages);
@@ -68,6 +70,7 @@ export function createServices(core: Core, options: { random?: () => number; sco
     dispatcher,
     analytics,
     leads,
+    calls,
   };
 }
 

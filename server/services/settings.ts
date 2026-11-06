@@ -46,6 +46,8 @@ export const settingsSchema = z.object({
   }),
   /** A reply within this many hours of a campaign message counts as a reply to that campaign. */
   attributionWindowHours: z.number().int().min(1).max(24 * 30),
+  /** Call recordings sent by team phones are deleted after this many days (call details stay). */
+  callRecordingDays: z.number().int().min(7).max(730),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;
@@ -76,6 +78,7 @@ export function defaultSettings(env: NodeJS.ProcessEnv = process.env): Settings 
       optOutFooter: 'Reply STOP to unsubscribe.',
     },
     attributionWindowHours: 72,
+    callRecordingDays: 90,
   };
 }
 

@@ -9,6 +9,7 @@ import type { Campaign, CampaignsService, RecipientRow } from './campaigns.js';
 import type { SequencesService, EnrollmentRow } from './sequences.js';
 import type { MessagesService } from './messages.js';
 import type { ChatMediaService } from './chat-media.js';
+import type { CallsService } from './calls.js';
 import type { OfficialNumbersService } from './official.js';
 import type { OutboxService, OutboxRow } from './outbox.js';
 import type { ContactsService, ContactRow } from './contacts.js';
@@ -32,6 +33,8 @@ export interface DispatcherDeps {
   chatMedia?: ChatMediaService;
   /** Checks Meta template reviews when a status webhook may have been missed. */
   official?: OfficialNumbersService;
+  /** Deletes call recordings past the business's retention. */
+  calls?: CallsService;
 }
 
 type SendOutcome = 'sent' | 'failed' | 'skipped' | 'transient' | 'empty';
@@ -189,6 +192,7 @@ export class Dispatcher {
       this.deps.outbox.expireStale();
       this.deps.inbound.pruneReceipts();
       this.deps.autoReplies.pruneHits();
+      this.deps.calls?.prune();
     } catch (error) {
       this.core.log.warn(`Maintenance failed: ${String(error)}`);
     }

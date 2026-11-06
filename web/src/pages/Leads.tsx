@@ -1,9 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { post, put, useApi, errorMessage, LEAD_STAGES, type Contact, type ContactFilter, type LeadReport, type LeadStage, type Paged, type TeamMember } from '../api';
+import {
+  post,
+  put,
+  useApi,
+  errorMessage,
+  LEAD_STAGES,
+  type CallApp,
+  type CallsSummary,
+  type Contact,
+  type ContactFilter,
+  type LeadReport,
+  type LeadStage,
+  type Paged,
+  type TeamMember,
+} from '../api';
+import { LeadCallCell } from '../components/calls';
 import { useSession } from '../session';
 import { isCaller, memberLabel, memberName, useTeam } from '../team';
-import { Button, Card, Empty, ErrorNote, Loading, PageHeader, Pagination, Segmented, TagChip, useToast } from '../components/ui';
+import { Button, Callout, Card, Empty, ErrorNote, Loading, PageHeader, Pagination, Segmented, TagChip, useToast } from '../components/ui';
 import { Funnel } from '../components/charts';
 import { AddedAt } from './ContactColumns';
 import { OriginSelect, type Origin } from '../country';
@@ -362,6 +377,11 @@ export function LeadsPage() {
   const filter = { ...range, stage, channel, origin, assignee, q: q || undefined } satisfies ContactFilter;
   const listPath = `/api/contacts?${query({ ...filter, page, pageSize: 25 })}`;
   const { data: list, error: listError, setData, reload: reloadList } = useApi<Paged<Contact>>(listPath);
+  // Calls made from team phones (the WA Reach Calls app), once the business has connected one.
+  const shownIds = list?.items.map(c => c.id).join(',') ?? '';
+  const { data: calls } = useApi<CallsSummary>(shownIds ? `/api/calls/summary?ids=${shownIds}` : null, { poll: 60_000 });
+  const tracking = !!calls?.tracking;
+  const { data: callApp } = useApi<CallApp>(caller ? '/api/call-app' : null);
   const pageIds = list?.items.map(c => c.id) ?? [];
   const allOnPage = pageIds.length > 0 && pageIds.every(id => selected.has(id));
   const toggle = (id: number, on: boolean) =>
@@ -412,6 +432,16 @@ export function LeadsPage() {
           )
         }
       />
+      {caller && callApp?.url && callApp.myPhones === 0 && (
+        <Callout>
+          <div className="row wrap between" style={{ gap: 10, flex: 1 }}>
+            <span>Install WA Reach Calls on your work phone, so the calls you make show next to your leads.</span>
+            <a className="btn sm" href={callApp.url} download>
+              <IconDownload size={14} /> Get the app
+            </a>
+          </div>
+        </Callout>
+      )}
       <div className="row wrap lead-range">
         <Segmented value={preset} onChange={setPreset} options={PRESETS} />
         {preset === 'custom' && (
@@ -543,6 +573,7 @@ export function LeadsPage() {
                       <th>Lead</th>
                       <th>Channel</th>
                       {!caller && team.length > 0 && <th>Given to</th>}
+                      {tracking && <th>Calls</th>}
                       <th>Lead stage</th>
                       <th>Lead remark</th>
                       <th>Added to WA Reach</th>
@@ -579,6 +610,11 @@ export function LeadsPage() {
                         {!caller && team.length > 0 && (
                           <td>
                             <AssigneeSelect contact={c} team={team} onSaved={onSaved} />
+                          </td>
+                        )}
+                        {tracking && (
+                          <td>
+                            <LeadCallCell calls={calls?.leads[c.id]} byId={caller ? undefined : byId} />
                           </td>
                         )}
                         <td>

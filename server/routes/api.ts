@@ -9,6 +9,8 @@ import { contactFilterSchema } from '../services/contacts.js';
 import { matchesRule, normalizeKeywordText } from '../services/auto-replies.js';
 import { ACCEPTED_MIME_TYPES } from '../services/media.js';
 import { mediaKind } from '../services/messages.js';
+import { CALL_APP_VERSION } from '../services/calls.js';
+import { createReadStream } from 'node:fs';
 
 /** Files from WhatsApp shown inside the Inbox; anything else (documents, odd types) is downloaded. */
 const INLINE_MEDIA = /^(image\/(jpeg|png|gif|webp)|video\/(mp4|webm|3gpp)|audio\/(ogg|mpeg|mp4|aac|amr|wav|webm|opus))$/;
@@ -55,6 +57,8 @@ export interface PlatformInfo {
   supportContact(): string | null;
   /** People who can sign in to this business (and so can be given leads). */
   team(): TeamMember[];
+  /** Where team members download the WA Reach Calls phone app, and its current version. */
+  callApp(): { url: string | null; version: string };
 }
 
 export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Services, platform?: PlatformInfo): Promise<void> {
@@ -488,6 +492,51 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   });
 
   // A photo, video, voice note or document from a WhatsApp chat: downloaded once, then kept here.
+  // ---------------------------------------------------------------- calls from team phones
+
+  /** Where to get the phone app, its version, and how many phones the signed-in person has connected. */
+  app.get('/call-app', async request => {
+    const me = request.auth?.user?.id;
+    return { ...(platform?.callApp() ?? { url: null, version: CALL_APP_VERSION }), myPhones: me ? s.calls.devices().filter(d => d.userId === me).length : 0 };
+  });
+  app.get('/call-devices', async () => ({ items: s.calls.devices() }));
+  /** Sign a phone out: it stops sending calls until someone signs in on it again. */
+  app.delete('/call-devices/:id', async request => {
+    s.calls.revoke(params(idParam, request).id);
+    return { ok: true };
+  });
+  app.get('/calls', async request => s.calls.list(request.query));
+  app.get('/calls/report', async request => s.calls.report(request.query));
+
+  /** Calls per lead for the Leads page. A caller only gets the leads they can see. */
+  app.get('/calls/summary', async request => {
+    const { ids } = z.object({ ids: z.string().regex(/^[1-9]\d{0,9}(,[1-9]\d{0,9}){0,199}$/, 'List up to 200 lead ids') }).parse(request.query);
+    let list = [...new Set(ids.split(',').map(Number))];
+    if (isCaller(request)) {
+      const owner = callerLeadOwner(request);
+      list = core.db
+        .all<{ id: number }>(
+          `SELECT id FROM contacts WHERE saved = 1 AND id IN (SELECT value FROM json_each(?))${owner === null ? '' : ' AND assigned_to = ?'}`,
+          JSON.stringify(list),
+          ...(owner === null ? [] : [owner]),
+        )
+        .map(r => r.id);
+    }
+    return s.calls.summary(list);
+  });
+
+  app.get('/calls/:id/recording', async (request, reply) => {
+    const file = s.calls.recording(params(idParam, request).id);
+    const inline = INLINE_MEDIA.test(file.mime);
+    return reply
+      .header('Content-Type', inline ? file.mime : 'application/octet-stream')
+      .header('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${file.name.replace(/[^\w.-]/g, '_')}"`)
+      .header('Content-Security-Policy', "default-src 'none'; media-src 'self'; sandbox")
+      .header('Cross-Origin-Resource-Policy', 'same-origin')
+      .header('Cache-Control', 'private, max-age=3600')
+      .send(createReadStream(file.path));
+  });
+
   app.get('/inbox/media/:id', async (request, reply) => {
     const { id } = params(idParam, request);
     const query = z.object({ download: z.enum(['1']).optional(), retry: z.enum(['1']).optional() }).parse(request.query);

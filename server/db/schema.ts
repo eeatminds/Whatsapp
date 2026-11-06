@@ -436,4 +436,43 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX contacts_assigned ON contacts (assigned_to);
   ALTER TABLE lead_sources ADD COLUMN assign_next INTEGER NOT NULL DEFAULT 0;
   `,
+  // 16: calls made from team members' phones, sent by the WA Reach Calls app. Only calls with
+  // a lead's number are kept; the phone's other calls are never stored. Recordings, when the
+  // phone's own dialer makes them, live in the business's call-recordings folder.
+  `
+  CREATE TABLE call_devices (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    session_version INTEGER NOT NULL,
+    app_version TEXT,
+    recordings TEXT,
+    since TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT,
+    revoked_at TEXT
+  );
+  CREATE INDEX call_devices_user ON call_devices (user_id);
+
+  CREATE TABLE calls (
+    id INTEGER PRIMARY KEY,
+    device_id INTEGER NOT NULL REFERENCES call_devices (id),
+    user_id INTEGER NOT NULL,
+    contact_id INTEGER REFERENCES contacts (id) ON DELETE SET NULL,
+    phone TEXT NOT NULL,
+    direction TEXT NOT NULL CHECK (direction IN ('outgoing', 'incoming', 'missed', 'rejected')),
+    started_at TEXT NOT NULL,
+    duration INTEGER NOT NULL DEFAULT 0,
+    recording_status TEXT NOT NULL DEFAULT 'pending' CHECK (recording_status IN ('pending', 'saved', 'none', 'deleted')),
+    recording_file TEXT,
+    recording_mime TEXT,
+    recording_size INTEGER,
+    created_at TEXT NOT NULL,
+    UNIQUE (user_id, phone, started_at)
+  );
+  CREATE INDEX calls_contact ON calls (contact_id, started_at);
+  CREATE INDEX calls_user ON calls (user_id, started_at);
+  CREATE INDEX calls_started ON calls (started_at);
+  `,
 ];
