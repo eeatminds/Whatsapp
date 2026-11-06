@@ -500,6 +500,8 @@ export interface Settings {
   sending: { sessionMaxPerMinute: number; dailyCapPerSession: number; frequencyCapHours: number; breakerThreshold: number; defaultPerMinute: number };
   compliance: { optOutKeywords: string[]; optInKeywords: string[]; optOutReply: string; optInReply: string; optOutFooter: string };
   attributionWindowHours: number;
+  /** Call recordings from team phones are deleted after this many days. */
+  callRecordingDays: number;
 }
 
 export interface SystemInfo {
@@ -639,4 +641,74 @@ export interface HealthIssue {
 export interface HealthReport {
   issues: HealthIssue[];
   backup: { lastRunAt: string | null; lastOkAt: string | null; lastError: string | null; lastFile: string | null } | null;
+}
+
+// ---------------------------------------------------------------- calls from team phones
+
+export type CallDirection = 'outgoing' | 'incoming' | 'missed' | 'rejected';
+
+export interface CallRecord {
+  id: number;
+  userId: number;
+  contactId: number | null;
+  contactName: string | null;
+  phone: string;
+  direction: CallDirection;
+  startedAt: string;
+  /** Seconds talked; 0 when nobody answered. */
+  duration: number;
+  answered: boolean;
+  recording: 'pending' | 'saved' | 'none' | 'deleted';
+  recordingMime: string | null;
+  device: string;
+}
+
+export interface CallDevice {
+  id: number;
+  userId: number;
+  name: string;
+  appVersion: string | null;
+  recordings: 'allowed' | 'denied' | null;
+  connectedAt: string;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface LeadCalls {
+  calls: number;
+  answered: number;
+  talkSeconds: number;
+  last: { at: string; duration: number; direction: CallDirection; userId: number } | null;
+  /** The lead has a remark but no call was recorded before it. */
+  remarkWithoutCall: boolean;
+}
+
+export interface CallsSummary {
+  /** False until the business connects its first phone. */
+  tracking: boolean;
+  leads: Record<string, LeadCalls>;
+}
+
+export interface CallsReportRow {
+  userId: number;
+  calls: number;
+  outgoing: number;
+  answered: number;
+  talkSeconds: number;
+  leadsCalled: number;
+  recorded: number;
+  remarksWithoutCall: number;
+}
+
+export interface CallsReport {
+  tracking: boolean;
+  people: CallsReportRow[];
+  devices: CallDevice[];
+}
+
+export interface CallApp {
+  url: string | null;
+  version: string;
+  /** Phones the signed-in person has connected. */
+  myPhones: number;
 }

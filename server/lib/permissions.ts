@@ -5,7 +5,14 @@ import type { FastifyRequest } from 'fastify';
  * call remark. This is the whole list of what they may call; anything not here is refused, so a route
  * added later stays closed to them until it is listed.
  */
-const CALLER_ROUTES = new Set(['GET /api/contacts', 'PUT /api/contacts/:id/lead', 'GET /api/leads/report']);
+const CALLER_ROUTES = new Set([
+  'GET /api/contacts',
+  'PUT /api/contacts/:id/lead',
+  'GET /api/leads/report',
+  // Their own leads' calls on the Leads page, and the phone app to record them.
+  'GET /api/calls/summary',
+  'GET /api/call-app',
+]);
 
 export const CALLER_REFUSED = 'Callers can only use the Leads page. Ask your admin for anything else.';
 

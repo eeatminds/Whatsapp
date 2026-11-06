@@ -95,6 +95,7 @@ export async function registerAdminRoutes(app: FastifyInstance, platform: Platfo
     if (platform.user(userId)?.tenant_id !== id) throw notFound('User');
     platform.deleteUser(userId);
     platform.runtime(id).services.leads.forgetTeamMember(userId);
+    platform.runtime(id).services.calls.revokeUser(userId);
     return { ok: true };
   });
 
@@ -223,6 +224,8 @@ export async function registerAccountRoutes(app: FastifyInstance, platform: Plat
     platform.deleteUser(target.id);
     // Their leads go back to "not given to anyone", and lead sources stop giving them new ones.
     platform.runtime(tenantOf(request)).services.leads.forgetTeamMember(target.id);
+    // Their phones stop sending calls; the calls they made stay on record.
+    platform.runtime(tenantOf(request)).services.calls.revokeUser(target.id);
     return { ok: true };
   });
 }

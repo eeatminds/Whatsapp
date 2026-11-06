@@ -19,6 +19,7 @@ import { CampaignReportPage } from './pages/CampaignReport';
 import { AutomationsPage } from './pages/Automations';
 import { InboxPage } from './pages/Inbox';
 import { LeadsPage } from './pages/Leads';
+import { CallsPage } from './pages/Calls';
 import { SettingsPage } from './pages/Settings';
 import { AccountPage } from './pages/Account';
 import { AdminOverviewPage, AdminBusinessesPage, AdminPaymentsPage, AdminSettingsPage } from './pages/Admin';
@@ -87,6 +88,7 @@ function BusinessRoutes() {
       <Route path="/inbox" element={<InboxPage />} />
       <Route path="/inbox/:contactId" element={<InboxPage />} />
       <Route path="/leads" element={<LeadsPage />} />
+      <Route path="/calls" element={<CallsPage />} />
       <Route path="/campaigns" element={<CampaignsPage />} />
       <Route path="/campaigns/new" element={<CampaignEditorPage />} />
       <Route path="/campaigns/:id/edit" element={<CampaignEditorPage />} />
