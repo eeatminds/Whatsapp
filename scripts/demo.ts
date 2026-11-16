@@ -340,7 +340,11 @@ async function main(): Promise<void> {
   const callers = [
     platform.addUser(chai.tenant.id, { email: 'ramgopal@chaico.demo', name: 'Ramgopal', role: 'caller', password: DEMO_PASSWORD }).user,
     platform.addUser(chai.tenant.id, { email: 'akshay@chaico.demo', name: 'Akshay', role: 'caller', password: DEMO_PASSWORD }).user,
+    // Geetha only works website leads (a tag scope).
+    platform.addUser(chai.tenant.id, { email: 'geetha@chaico.demo', name: 'Geetha', role: 'caller', leadScope: 'tag', leadTag: web, password: DEMO_PASSWORD }).user,
   ];
+  // New leads are shared out automatically between all callers; old inbox chats are cleared after 60 days.
+  s.settings.update({ autoAssign: { enabled: true, among: 'all', userIds: [] }, inboxRetentionDays: 60 });
   const leadIds = s.contacts.ids({ channel: `src:${sources[0].id}` }).concat(s.contacts.ids({ channel: `src:${sources[1].id}` }));
   leadIds.forEach((id, i) => {
     if (i % 5 !== 4) s.contacts.assign([id], callers[i % 2].id);
@@ -350,7 +354,7 @@ async function main(): Promise<void> {
   // A couple of remarks have no call behind them, so the warning shows.
   offset = -30 * 86_400_000;
   const phones = callers.map((c, i) => {
-    const { secret } = s.calls.connect(c.id, 1, i === 0 ? 'Samsung Galaxy A15' : 'Redmi Note 13');
+    const { secret } = s.calls.connect(c.id, 1, i === 0 ? 'Samsung Galaxy A15' : i === 1 ? 'Redmi Note 13' : 'Vivo Y28');
     return s.calls.device(secret)!;
   });
   offset = 0;

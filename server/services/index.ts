@@ -21,7 +21,7 @@ import { LeadsService } from './leads.js';
 import { ChatMediaService } from './chat-media.js';
 import { CallsService } from './calls.js';
 
-export function createServices(core: Core, options: { random?: () => number; scope?: SessionScope } = {}) {
+export function createServices(core: Core, options: { random?: () => number; scope?: SessionScope; callers?: () => number[] } = {}) {
   const bus = new Bus();
   const settings = new SettingsService(core.db, defaultSettings());
   const tags = new TagsService(core);
@@ -48,7 +48,7 @@ export function createServices(core: Core, options: { random?: () => number; sco
     options.random,
   );
   const analytics = new AnalyticsService(core, settings, contacts, messages);
-  const leads = new LeadsService(core, settings, contacts, tags, sequences, outbox);
+  const leads = new LeadsService(core, settings, contacts, tags, sequences, outbox, options.callers ?? (() => []));
   return {
     bus,
     settings,

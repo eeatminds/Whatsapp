@@ -421,7 +421,9 @@ export function LeadsPage() {
           caller
             ? me.user?.leadScope === 'all'
               ? 'Every lead: call them, then set the stage and note what was said.'
-              : 'The leads given to you: call them, then set the stage and note what was said.'
+              : me.user?.leadScope === 'tag'
+                ? 'Your leads: call them, then set the stage and note what was said.'
+                : 'The leads given to you: call them, then set the stage and note what was said.'
             : 'Every lead in one place: where it came from, who it is given to, its stage, and what was said on the call.'
         }
         actions={

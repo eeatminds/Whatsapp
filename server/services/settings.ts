@@ -48,6 +48,21 @@ export const settingsSchema = z.object({
   attributionWindowHours: z.number().int().min(1).max(24 * 30),
   /** Call recordings sent by team phones are deleted after this many days (call details stay). */
   callRecordingDays: z.number().int().min(7).max(730),
+  /**
+   * Share every new lead out between callers, round-robin. A lead source that names its own people
+   * still wins; this is the default for every other new lead. `among`: 'all' = all current callers,
+   * 'chosen' = only the picked user ids.
+   */
+  autoAssign: z.object({
+    enabled: z.boolean(),
+    among: z.enum(['all', 'chosen']),
+    userIds: z.array(z.coerce.number().int().positive()).max(100),
+  }),
+  /**
+   * Delete Inbox messages (and their downloaded photos/documents) older than this many days, to save
+   * space. 0 keeps them forever. Contacts, leads, remarks and call records are always kept.
+   */
+  inboxRetentionDays: z.number().int().min(0).max(3650),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;
@@ -79,6 +94,9 @@ export function defaultSettings(env: NodeJS.ProcessEnv = process.env): Settings 
     },
     attributionWindowHours: 72,
     callRecordingDays: 90,
+    autoAssign: { enabled: false, among: 'all', userIds: [] },
+    // On by default at 30 days to keep hosting space in check; contacts and leads are never touched.
+    inboxRetentionDays: 30,
   };
 }
 

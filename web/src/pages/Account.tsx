@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { del, patch, post, useApi, errorMessage, ROLE_LABEL, type Payment, type PlatformUser, type TenantInfo } from '../api';
-import { Button, Callout, Card, ErrorNote, Field, Loading, Modal, PageHeader, useConfirm, useToast } from '../components/ui';
+import { del, patch, post, put, useApi, errorMessage, ROLE_LABEL, type Payment, type PlatformUser, type Settings, type TenantInfo } from '../api';
+import { Button, Callout, Card, ErrorNote, Field, Loading, Modal, PageHeader, Toggle, useConfirm, useToast } from '../components/ui';
 import { IconCopy } from '../components/icons';
+import { useTags } from '../components/pickers';
 import { useSession, money } from '../session';
 import { formatDate, relativeTime } from '../format';
 import { AccessBadge } from './Admin';
@@ -78,7 +79,8 @@ function TeamCard({
   const { confirm, dialog } = useConfirm();
   const [form, setForm] = useState({ email: '', name: '', role: 'caller' as 'caller' | 'member' });
   const [passwordFor, setPasswordFor] = useState<PlatformUser | null>(null);
-  const change = async (u: PlatformUser, body: Partial<Pick<PlatformUser, 'role' | 'leadScope'>>) => {
+  const { data: tags } = useTags();
+  const change = async (u: PlatformUser, body: Partial<Pick<PlatformUser, 'role' | 'leadScope' | 'leadTag'>>) => {
     try {
       await patch(`/api/account/users/${u.id}`, body);
       onChanged();
@@ -120,10 +122,39 @@ function TeamCard({
                         style={{ width: 'auto' }}
                         value={u.leadScope}
                         aria-label={`Which leads ${u.email} sees`}
-                        onChange={e => void change(u, { leadScope: e.target.value as 'assigned' | 'all' })}
+                        onChange={e => {
+                          const scope = e.target.value as 'assigned' | 'all' | 'tag';
+                          if (scope === 'tag') {
+                            const first = tags?.[0]?.id;
+                            if (!first) {
+                              toast.error('Create a tag first (Contacts → Tags), then choose it here.');
+                              return;
+                            }
+                            void change(u, { leadScope: 'tag', leadTag: u.leadTag ?? first });
+                          } else {
+                            void change(u, { leadScope: scope });
+                          }
+                        }}
                       >
                         <option value="assigned">Sees only leads given to them</option>
                         <option value="all">Sees all leads</option>
+                        <option value="tag">Sees only one tag's leads</option>
+                      </select>
+                    )}
+                    {u.role === 'caller' && u.leadScope === 'tag' && (
+                      <select
+                        className="select sm"
+                        style={{ width: 'auto' }}
+                        value={u.leadTag ?? ''}
+                        aria-label={`Which tag's leads ${u.email} sees`}
+                        onChange={e => void change(u, { leadTag: Number(e.target.value) })}
+                      >
+                        {!tags?.some(t => t.id === u.leadTag) && <option value="">Choose a tag…</option>}
+                        {tags?.map(t => (
+                          <option key={t.id} value={t.id}>
+                            {t.name}
+                          </option>
+                        ))}
                       </select>
                     )}
                   </div>
@@ -214,6 +245,63 @@ function TeamCard({
         />
       )}
       {dialog}
+    </Card>
+  );
+}
+
+/** Share every new lead out automatically, round-robin, between the callers. */
+function AutoAssignCard({ callers }: { callers: PlatformUser[] }) {
+  const toast = useToast();
+  const { data, setData } = useApi<Settings>('/api/settings');
+  const [busy, setBusy] = useState(false);
+  if (!data) return null;
+  const auto = data.autoAssign;
+  const save = async (next: Settings['autoAssign']) => {
+    setBusy(true);
+    try {
+      setData(await put<Settings>('/api/settings', { autoAssign: next }));
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const toggleUser = (id: number, on: boolean) => save({ ...auto, userIds: on ? [...new Set([...auto.userIds, id])] : auto.userIds.filter(x => x !== id) });
+  return (
+    <Card title="Auto-assign new leads" subtitle="Share every new lead out evenly between your callers, in turn. A lead source that names its own people still wins.">
+      <div className="stack">
+        <Toggle checked={auto.enabled} disabled={busy} onChange={enabled => void save({ ...auto, enabled })} label="Give each new lead to a caller automatically" />
+        {auto.enabled && (
+          <>
+            {callers.length === 0 ? (
+              <Callout tone="warn">Add callers in the Team section above first — new leads can only be shared between callers.</Callout>
+            ) : (
+              <>
+                <div className="stack tight">
+                  <label className="row" style={{ gap: 8 }}>
+                    <input type="radio" name="auto-among" checked={auto.among === 'all'} disabled={busy} onChange={() => void save({ ...auto, among: 'all' })} />
+                    <span>All callers {auto.among === 'all' && <span className="small muted">(new callers are included automatically)</span>}</span>
+                  </label>
+                  <label className="row" style={{ gap: 8 }}>
+                    <input type="radio" name="auto-among" checked={auto.among === 'chosen'} disabled={busy} onChange={() => void save({ ...auto, among: 'chosen' })} />
+                    <span>Only the callers I pick</span>
+                  </label>
+                </div>
+                {auto.among === 'chosen' && (
+                  <div className="row wrap" style={{ gap: 6 }}>
+                    {callers.map(c => (
+                      <label key={c.id} className={`chip-check ${auto.userIds.includes(c.id) ? 'on' : ''}`}>
+                        <input type="checkbox" checked={auto.userIds.includes(c.id)} disabled={busy} onChange={e => void toggleUser(c.id, e.target.checked)} />
+                        {c.name || c.email}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
     </Card>
   );
 }
@@ -314,6 +402,8 @@ export function AccountPage() {
           )}
         </Card>
       </div>
+
+      {isOwner && <AutoAssignCard callers={data.users.filter(u => u.role === 'caller')} />}
 
       {isOwner && (
         <Card title="API access" subtitle="Add contacts from your website forms, CRM, Zapier or n8n.">

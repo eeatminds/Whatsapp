@@ -322,10 +322,22 @@ export class LeadsService {
     private readonly tags: TagsService,
     private readonly sequences: SequencesService,
     private readonly outbox: OutboxService,
+    /** The business's current, enabled callers (their user ids), for auto-assigning new leads. */
+    private readonly callers: () => number[] = () => [],
   ) {}
 
   private now(): string {
     return nowIso(this.core.clock());
+  }
+
+  /** Share a new, unassigned lead out round-robin between the callers the business chose. */
+  private autoAssign(contactId: number): void {
+    const auto = this.settings.get().autoAssign;
+    if (!auto.enabled) return;
+    const live = this.callers();
+    const pool = auto.among === 'all' ? live : auto.userIds.filter(id => live.includes(id));
+    const next = this.contacts.nextAssignee(pool);
+    if (next !== null) this.contacts.assign([contactId], next);
   }
 
   /** Public link for a source: <PUBLIC_URL>/hooks/leads/<business>/<token>. */
@@ -618,6 +630,9 @@ export class LeadsService {
         actions.assignTo = actions.assignTo.filter(id => id !== userId);
         this.core.db.run('UPDATE lead_sources SET actions = ?, assign_next = 0 WHERE id = ?', JSON.stringify(actions), row.id);
       }
+      // Drop them from the business-wide auto-assign list too.
+      const auto = this.settings.get().autoAssign;
+      if (auto.userIds.includes(userId)) this.settings.update({ autoAssign: { ...auto, userIds: auto.userIds.filter(id => id !== userId) } });
     });
   }
 
@@ -688,6 +703,9 @@ export class LeadsService {
           this.contacts.assign([contactId], actions.assignTo[turn % actions.assignTo.length]);
           this.core.db.run('UPDATE lead_sources SET assign_next = ? WHERE id = ?', (turn + 1) % actions.assignTo.length, source.id);
         }
+        // The source named nobody, so fall back to the business-wide auto-assign: share this new lead
+        // out, round-robin, between the available callers.
+        if (!options.backfill && this.contacts.assigneeOf(contactId) === null) this.autoAssign(contactId);
         return { contactId, created: upserted.created };
       });
     } catch (error) {

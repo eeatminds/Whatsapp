@@ -475,4 +475,11 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX calls_user ON calls (user_id, started_at);
   CREATE INDEX calls_started ON calls (started_at);
   `,
+  // 17: the round-robin pointer for auto-assigning new leads among callers (one row, scope 'auto').
+  `
+  CREATE TABLE lead_assign_state (
+    scope TEXT PRIMARY KEY,
+    next_index INTEGER NOT NULL DEFAULT 0
+  );
+  `,
 ];

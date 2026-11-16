@@ -690,6 +690,24 @@ export class ContactsService {
     return this.row(contactId).assigned_to ?? null;
   }
 
+  /** Whether a contact carries a given tag (used to scope a caller to one tag's leads). */
+  hasTag(contactId: number, tagId: number): boolean {
+    return !!this.core.db.get('SELECT 1 FROM contact_tags WHERE contact_id = ? AND tag_id = ?', contactId, tagId);
+  }
+
+  /** The next caller to give a lead to, round-robin over `userIds`; advances the stored pointer. */
+  nextAssignee(userIds: number[]): number | null {
+    if (userIds.length === 0) return null;
+    const row = this.core.db.get<{ next_index: number }>("SELECT next_index FROM lead_assign_state WHERE scope = 'auto'");
+    const index = row?.next_index ?? 0;
+    const userId = userIds[index % userIds.length];
+    this.core.db.run(
+      "INSERT INTO lead_assign_state (scope, next_index) VALUES ('auto', ?) ON CONFLICT (scope) DO UPDATE SET next_index = excluded.next_index",
+      (index + 1) % Math.max(userIds.length, 1),
+    );
+    return userId;
+  }
+
   /** Set a lead's stage and/or its shared remark. `by` is who made the change (shown to the team). */
   setLead(contactId: number, input: unknown, by: string): Contact {
     const data = leadUpdateSchema.parse(input);
@@ -771,7 +789,7 @@ export class ContactsService {
 
   /** Scoreboard, channel table and funnel for leads added in a date range. */
   leadReport(input: unknown) {
-    const filter = contactFilterSchema.pick({ from: true, to: true, assignee: true }).parse(input ?? {});
+    const filter = contactFilterSchema.pick({ from: true, to: true, assignee: true, tagId: true }).parse(input ?? {});
     const where = this.filterSql(filter);
     const byStage = Object.fromEntries(LEAD_STAGES.map(stage => [stage, 0])) as Record<LeadStage, number>;
     for (const r of this.core.db.all<{ lead_stage: LeadStage; n: number }>(

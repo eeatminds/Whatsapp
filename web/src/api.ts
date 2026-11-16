@@ -502,6 +502,10 @@ export interface Settings {
   attributionWindowHours: number;
   /** Call recordings from team phones are deleted after this many days. */
   callRecordingDays: number;
+  /** Share every new lead out round-robin between callers (a lead source that names people still wins). */
+  autoAssign: { enabled: boolean; among: 'all' | 'chosen'; userIds: number[] };
+  /** Delete Inbox messages (and their files) older than this many days to save space; 0 keeps them. */
+  inboxRetentionDays: number;
 }
 
 export interface SystemInfo {
@@ -564,8 +568,10 @@ export interface PlatformUser {
   disabled: boolean;
   lastLoginAt: string | null;
   createdAt: string;
-  /** Which leads a caller sees: only those given to them, or all. */
-  leadScope: 'assigned' | 'all';
+  /** Which leads a caller sees: only those given to them, all, or only those with one tag. */
+  leadScope: 'assigned' | 'all' | 'tag';
+  /** With leadScope 'tag': the tag id whose leads this caller sees. */
+  leadTag: number | null;
 }
 
 /** Someone who can sign in to the business, and so can be given leads. */

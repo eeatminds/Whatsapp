@@ -26,8 +26,8 @@ import { hashPassword, temporaryPassword, verifyPassword } from './passwords.js'
 
 /** owner: the business's admin (everything). member: everything but billing and team. caller: the Leads page only. */
 export type Role = 'platform_admin' | 'owner' | 'member' | 'caller';
-/** Which leads a caller sees: only those given to them, or all. */
-export type LeadScope = 'assigned' | 'all';
+/** Which leads a caller sees: only those given to them, all of them, or only those with one tag. */
+export type LeadScope = 'assigned' | 'all' | 'tag';
 export type Access = 'active' | 'grace' | 'expired' | 'suspended';
 
 export interface UserRow {
@@ -42,6 +42,8 @@ export interface UserRow {
   last_login_at: string | null;
   created_at: string;
   lead_scope: LeadScope;
+  /** With lead_scope 'tag': the tenant tag id whose leads this caller sees. */
+  lead_tag: number | null;
 }
 
 export interface TenantRow {
@@ -88,6 +90,8 @@ export interface PublicUser {
   lastLoginAt: string | null;
   createdAt: string;
   leadScope: LeadScope;
+  /** With leadScope 'tag': the tag id whose leads this caller sees. */
+  leadTag: number | null;
 }
 
 export const platformSettingsSchema = z.object({
@@ -178,7 +182,9 @@ export const addUserSchema = z.object({
   email,
   name: z.string().trim().max(80).optional(),
   role: z.enum(['owner', 'member', 'caller']).default('member'),
-  leadScope: z.enum(['assigned', 'all']).default('assigned'),
+  leadScope: z.enum(['assigned', 'all', 'tag']).default('assigned'),
+  /** With leadScope 'tag': the tenant tag id whose leads the caller sees. */
+  leadTag: z.coerce.number().int().positive().nullish(),
   password: password.optional(),
 });
 
@@ -186,7 +192,8 @@ export const addUserSchema = z.object({
 export const teamMemberUpdateSchema = z.object({
   name: z.string().trim().max(80).optional(),
   role: z.enum(['member', 'caller']).optional(),
-  leadScope: z.enum(['assigned', 'all']).optional(),
+  leadScope: z.enum(['assigned', 'all', 'tag']).optional(),
+  leadTag: z.coerce.number().int().positive().nullish(),
 });
 
 const DAY = 86_400_000;
@@ -222,6 +229,7 @@ export function toPublicUser(row: UserRow): PublicUser {
     lastLoginAt: row.last_login_at,
     createdAt: row.created_at,
     leadScope: row.lead_scope ?? 'assigned',
+    leadTag: row.lead_tag ?? null,
   };
 }
 
@@ -332,9 +340,12 @@ export class Platform {
     this.tenantRow(tenant);
     const data = addUserSchema.parse(input);
     this.assertEmailFree(data.email);
+    // A tag is only kept when the caller is limited to one; a tag scope needs a tag.
+    const tag = data.leadScope === 'tag' ? (data.leadTag ?? null) : null;
+    if (data.leadScope === 'tag' && !tag) throw badRequest('Choose a tag for this caller');
     const plain = data.password ?? temporaryPassword();
     const id = this.db.run(
-      'INSERT INTO users (email, name, password_hash, role, tenant_id, created_at, lead_scope) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO users (email, name, password_hash, role, tenant_id, created_at, lead_scope, lead_tag) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       data.email,
       data.name || null,
       hashPassword(plain),
@@ -342,6 +353,7 @@ export class Platform {
       tenant,
       this.now(),
       data.leadScope,
+      tag,
     ).lastInsertRowid;
     return { user: toPublicUser(this.user(id)!), password: plain };
   }
@@ -361,11 +373,16 @@ export class Platform {
     const user = this.user(userId);
     if (!user || user.tenant_id !== tenant) throw notFound('User');
     if (user.role === 'owner' && data.role) throw badRequest("The admin's role can't be changed");
+    const scope = data.leadScope ?? user.lead_scope;
+    // Keep a tag only while the scope is 'tag'; take the new tag if given, else the one already set.
+    const tag = scope === 'tag' ? (data.leadTag !== undefined ? data.leadTag : user.lead_tag) : null;
+    if (scope === 'tag' && !tag) throw badRequest('Choose a tag for this caller');
     this.db.run(
-      'UPDATE users SET name = ?, role = ?, lead_scope = ? WHERE id = ?',
+      'UPDATE users SET name = ?, role = ?, lead_scope = ?, lead_tag = ? WHERE id = ?',
       data.name !== undefined ? data.name || null : user.name,
       data.role ?? user.role,
-      data.leadScope ?? user.lead_scope,
+      scope,
+      tag,
       userId,
     );
     return toPublicUser(this.user(userId)!);
@@ -673,7 +690,12 @@ export class Platform {
       namePrefix: `${tenant}-`,
       maxNumbers: () => this.db.get<{ max_numbers: number }>('SELECT max_numbers FROM tenants WHERE id = ?', tenant)?.max_numbers ?? 1,
     };
-    const services = createServices(core, { random: this.random, scope });
+    const services = createServices(core, {
+      random: this.random,
+      scope,
+      // The business's current, enabled callers — for sharing new leads out between them.
+      callers: () => this.users(tenant).filter(u => u.role === 'caller' && !u.disabled).map(u => u.id),
+    });
     if (this.starterKit) {
       try {
         seedStarterKit(core.db, services, this.now());

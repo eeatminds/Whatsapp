@@ -193,6 +193,7 @@ export class Dispatcher {
       this.deps.inbound.pruneReceipts();
       this.deps.autoReplies.pruneHits();
       this.deps.calls?.prune();
+      this.deps.chatMedia?.pruneOldMessages(this.deps.settings.get().inboxRetentionDays);
     } catch (error) {
       this.core.log.warn(`Maintenance failed: ${String(error)}`);
     }
