@@ -691,6 +691,8 @@ export interface CallDevice {
   problem: { message: string; at: string } | null;
   /** Newest call recording the phone's dialer saved (folder, when); 'none' when recording looks off; null before the phone says. */
   dialerRecordings: { folder: string; at: string } | 'none' | null;
+  /** What the phone found when it last looked for a call's recording, in its words. */
+  recordingCheck: { text: string; at: string } | null;
 }
 
 export interface LeadCalls {

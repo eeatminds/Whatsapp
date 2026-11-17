@@ -26,6 +26,8 @@ public class FakeMedia extends ContentProvider {
         final File file;
         final String mime;
         final long durationMs;
+        /** As listed when the file was saved, even if the file is gone since. */
+        final long size;
 
         Row(long id, String name, String folder, long addedSec, long modifiedSec, File file, String mime, long durationMs) {
             this.id = id;
@@ -36,6 +38,7 @@ public class FakeMedia extends ContentProvider {
             this.file = file;
             this.mime = mime;
             this.durationMs = durationMs;
+            this.size = file.length();
         }
 
         Object value(String column) {
@@ -47,13 +50,13 @@ public class FakeMedia extends ContentProvider {
                 case MediaStore.Audio.Media.RELATIVE_PATH:
                     return folder;
                 case MediaStore.Audio.Media.DATA:
-                    return "/storage/emulated/0/" + folder + name;
+                    return file.getAbsolutePath();
                 case MediaStore.Audio.Media.DATE_ADDED:
                     return addedSec;
                 case MediaStore.Audio.Media.DATE_MODIFIED:
                     return modifiedSec;
                 case MediaStore.Audio.Media.SIZE:
-                    return file.length();
+                    return size;
                 case MediaStore.Audio.Media.MIME_TYPE:
                     return mime;
                 case MediaStore.Audio.Media.DURATION:
@@ -65,6 +68,8 @@ public class FakeMedia extends ContentProvider {
     }
 
     static final List<Row> ROWS = new ArrayList<>();
+    /** Like some phones' media lists: the file is listed but can't be opened through it. */
+    static volatile boolean refuseOpen;
     private static final Map<Long, File> FILES = new HashMap<>();
 
     static void add(Row row) {
@@ -75,6 +80,7 @@ public class FakeMedia extends ContentProvider {
     static void clear() {
         ROWS.clear();
         FILES.clear();
+        refuseOpen = false;
     }
 
     @Override
@@ -110,6 +116,7 @@ public class FakeMedia extends ContentProvider {
 
     @Override
     public AssetFileDescriptor openAssetFile(Uri uri, String mode) throws FileNotFoundException {
+        if (refuseOpen) throw new FileNotFoundException("Not allowed: " + uri);
         File file = FILES.get(Long.parseLong(uri.getLastPathSegment()));
         if (file == null || !file.exists()) throw new FileNotFoundException(uri.toString());
         return new AssetFileDescriptor(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY), 0, file.length());

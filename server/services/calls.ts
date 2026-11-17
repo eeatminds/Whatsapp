@@ -20,7 +20,7 @@ import type { ContactsService } from './contacts.js';
  */
 
 /** The app version the server expects; older apps are told an update is available. */
-export const CALL_APP_VERSION = '1.0.3';
+export const CALL_APP_VERSION = '1.0.4';
 
 export type CallDirection = 'outgoing' | 'incoming' | 'missed' | 'rejected';
 /** Android's CallLog.Calls.TYPE values. */
@@ -63,6 +63,8 @@ export interface DeviceRow {
   problem_at: string | null;
   recording_folder: string | null;
   last_recording_at: string | null;
+  recording_check: string | null;
+  recording_check_at: string | null;
 }
 
 interface CallRow {
@@ -116,6 +118,8 @@ export interface CallDevice {
    * saved none in the last week (call recording is off). null: not reported yet.
    */
   dialerRecordings: { folder: string; at: string } | 'none' | null;
+  /** What the phone found when it last looked for a call's recording, in its words. */
+  recordingCheck: { text: string; at: string } | null;
 }
 
 /** What a lead's calls look like on the Leads page. */
@@ -141,6 +145,8 @@ const uploadSchema = z.object({
       /** Folder of the newest call recording the dialer saved ('' = none in the last week), and when (ms). */
       recordingsFolder: z.string().trim().max(200).optional(),
       lastRecordingAt: z.number().int().min(0).optional(),
+      /** What the phone found when it last looked for a call's recording. */
+      recordingCheck: z.string().trim().min(1).max(300).optional(),
     })
     .default({}),
   calls: z
@@ -267,6 +273,7 @@ export class CallsService {
         health: health(d, now),
         problem: d.problem && d.problem_at ? { message: d.problem, at: d.problem_at } : null,
         dialerRecordings: d.recording_folder === null ? null : d.recording_folder && d.last_recording_at ? { folder: d.recording_folder, at: d.last_recording_at } : 'none',
+        recordingCheck: d.recording_check && d.recording_check_at ? { text: d.recording_check, at: d.recording_check_at } : null,
       }));
   }
 
@@ -288,7 +295,8 @@ export class CallsService {
       `UPDATE call_devices SET last_seen_at = ?, name = COALESCE(?, name), app_version = COALESCE(?, app_version), recordings = COALESCE(?, recordings),
          call_log = COALESCE(?, call_log), background = COALESCE(?, background),
          problem = COALESCE(?, problem), problem_at = CASE WHEN ? IS NULL THEN problem_at ELSE ? END,
-         recording_folder = COALESCE(?, recording_folder), last_recording_at = CASE WHEN ? IS NULL THEN last_recording_at ELSE ? END
+         recording_folder = COALESCE(?, recording_folder), last_recording_at = CASE WHEN ? IS NULL THEN last_recording_at ELSE ? END,
+         recording_check = COALESCE(?, recording_check), recording_check_at = CASE WHEN ? IS NULL THEN recording_check_at ELSE ? END
        WHERE id = ?`,
       nowIso(now),
       data.device.name ?? null,
@@ -302,10 +310,18 @@ export class CallsService {
       data.device.recordingsFolder ?? null,
       data.device.recordingsFolder ?? null,
       data.device.lastRecordingAt ? iso(data.device.lastRecordingAt) : null,
+      data.device.recordingCheck ?? null,
+      data.device.recordingCheck ?? null,
+      nowIso(now),
       device.id,
     );
     const since = Date.parse(device.since);
     const country = this.settings.get().defaultCountry;
+    // A phone that can't read recordings will never send one: its calls don't wait for one.
+    const recordings = data.device.recordings ?? device.recordings;
+    if (recordings === 'denied') {
+      this.core.db.run("UPDATE calls SET recording_status = 'none' WHERE device_id = ? AND recording_status = 'pending'", device.id);
+    }
     let stored = 0;
     let ignored = 0;
     this.core.db.tx(() => {
@@ -332,13 +348,12 @@ export class CallsService {
           direction,
           iso(call.startedAt),
           talked ? call.duration : 0,
-          talked ? 'pending' : 'none',
+          talked && recordings !== 'denied' ? 'pending' : 'none',
           nowIso(now),
         );
         stored += changes;
       }
     });
-    const recordings = data.device.recordings ?? device.recordings;
     return { stored, ignored, recordingsWanted: recordings === 'allowed' ? this.wanted(device.id) : [] };
   }
 

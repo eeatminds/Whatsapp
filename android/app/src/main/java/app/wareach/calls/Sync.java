@@ -6,7 +6,11 @@ import android.content.pm.PackageManager;
 import android.content.res.AssetFileDescriptor;
 import android.os.Build;
 import android.os.PowerManager;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.InputStream;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import org.json.JSONArray;
@@ -77,6 +81,7 @@ final class Sync {
                 device.put("recordingsFolder", latest == null ? "" : latest.folder).put("lastRecordingAt", latest == null ? 0 : latest.at);
                 prefs.recordingsChecked(latest == null ? "" : latest.folder, latest == null ? 0 : latest.at);
             }
+            if (!prefs.recordingReport().isEmpty()) device.put("recordingCheck", prefs.recordingReport());
             String problem = prefs.problem();
             if (!problem.isEmpty() && !prefs.problemReported()) device.put("problem", problem);
             if (!callHistory) {
@@ -106,7 +111,15 @@ final class Sync {
                 prefs.synced(lastId, 0);
                 if (entries.size() < BATCH) break;
             }
-            if (recordings && sendRecordings(context, prefs, wanted) > 0 && lookAgain) Scheduler.lookAgainSoon(context);
+            if (recordings) {
+                String before = prefs.recordingReport();
+                if (sendRecordings(context, prefs, wanted) > 0 && lookAgain) Scheduler.lookAgainSoon(context);
+                // Tell WA Reach straight away what happened to the newest call's recording.
+                if (!prefs.recordingReport().equals(before)) {
+                    JSONObject check = new JSONObject().put("recordingCheck", prefs.recordingReport());
+                    Api.json("POST", prefs.server(), "/calls", prefs.token(), new JSONObject().put("device", check).put("calls", new JSONArray()));
+                }
+            }
             prefs.synced(lastId, kept);
             return true;
         } catch (Api.ApiException e) {
@@ -134,52 +147,103 @@ final class Sync {
     /**
      * Uploads the recordings WA Reach asked for. Returns how many weren't found yet but may still
      * appear (the dialer can take a moment to save the file); after GIVE_UP_MS WA Reach is told there
-     * is none.
+     * is none. What happened to the newest call is kept as a short report for the caller and admin.
      */
     private static int sendRecordings(Context context, Prefs prefs, JSONArray wanted) throws Exception {
         long now = System.currentTimeMillis();
         int notYet = 0;
+        String report = null;
         for (int i = 0; i < wanted.length(); i++) {
             JSONObject call = wanted.getJSONObject(i);
             long id = call.getLong("id");
             long startedAt = call.getLong("startedAt");
             int duration = call.getInt("duration");
-            RecordingFinder.Found found;
+            String when = new SimpleDateFormat("d MMM h:mm a", Locale.ENGLISH).format(new Date(startedAt));
+            RecordingFinder.Search search;
             try {
-                found = RecordingFinder.find(context, call.getString("number"), startedAt, duration);
+                search = RecordingFinder.find(context, call.getString("number"), startedAt, duration);
             } catch (RuntimeException e) {
-                found = null;
+                search = new RecordingFinder.Search();
+                report = "Call at " + when + ": the phone's media list couldn't be searched (" + e.getClass().getSimpleName() + ").";
             }
-            if (found != null && upload(context, prefs, id, found)) continue;
+            if (search.found != null) {
+                String outcome = upload(context, prefs, id, search.found);
+                if (outcome == null) {
+                    report = "Call at " + when + ": recording sent (from " + search.found.folder + ").";
+                    continue;
+                }
+                report = "Call at " + when + ": found its recording in " + search.found.folder + " but " + outcome;
+                if (outcome.startsWith("WA Reach")) continue;
+            } else if (report == null || !report.startsWith("Call at " + when)) {
+                report = "Call at " + when + ": " + describe(search, duration);
+            }
             if (now > startedAt + duration * 1000L + GIVE_UP_MS) {
                 Api.json("POST", prefs.server(), "/recordings/" + id + "/none", prefs.token(), null);
             } else {
                 notYet++;
             }
         }
+        if (report != null) prefs.recordingReport(report);
         return notYet;
     }
 
-    /** Sends one recording. False when the file can't be opened (moved, deleted, or not allowed). */
-    private static boolean upload(Context context, Prefs prefs, long callId, RecordingFinder.Found found) throws Exception {
-        AssetFileDescriptor file;
-        try {
-            file = context.getContentResolver().openAssetFileDescriptor(found.uri, "r");
-        } catch (java.io.IOException | RuntimeException e) {
-            return false;
+    /** Why no recording was found for a call, in words for the caller and the admin. */
+    static String describe(RecordingFinder.Search search, int callSec) {
+        if (search.nearby == 0) return "no audio file was saved on the phone around it, so the Phone app didn't record it.";
+        if (search.candidates == 0) {
+            return "audio files were saved around it (in " + String.join(", ", search.folders)
+                    + ") but none in a call recordings folder or named with the number.";
         }
-        if (file == null) return false;
-        try (AssetFileDescriptor f = file; InputStream in = f.createInputStream()) {
-            // The file's real size now (the media index can lag behind a file still being written).
-            long length = f.getLength() >= 0 ? f.getLength() : f.getParcelFileDescriptor().getStatSize();
-            if (length <= 0) return false;
-            Api.upload(prefs.server(), "/recordings/" + callId, prefs.token(), in, length, found.mime);
-            return true;
+        if (search.badSize == search.candidates) return "the recording in " + String.join(", ", search.folders) + " is empty or still being saved.";
+        if (search.wrongLength > 0) return "the recording nearest it is " + search.wrongLength + " s long and the call was " + callSec + " s, so it's another call's.";
+        return "no matching recording yet.";
+    }
+
+    /**
+     * Sends one recording: through the media list, or straight from its file if the media list won't
+     * hand it over. Returns null when sent, else what went wrong (starting "WA Reach" when WA Reach
+     * refused the file, which then counts as having no recording).
+     */
+    private static String upload(Context context, Prefs prefs, long callId, RecordingFinder.Found found) throws Exception {
+        String problem;
+        try {
+            AssetFileDescriptor file = context.getContentResolver().openAssetFileDescriptor(found.uri, "r");
+            if (file != null) {
+                try (AssetFileDescriptor f = file; InputStream in = f.createInputStream()) {
+                    // The file's real size now (the media index can lag behind a file still being written).
+                    long length = f.getLength() >= 0 ? f.getLength() : f.getParcelFileDescriptor().getStatSize();
+                    if (length > 0) return send(prefs, callId, in, length, found.mime);
+                }
+            }
+            problem = "the media list gave an empty file";
+        } catch (Api.ApiException e) {
+            throw e;
+        } catch (java.io.IOException | RuntimeException e) {
+            problem = "couldn't open it (" + e.getClass().getSimpleName() + ")";
+        }
+        // Some phones' media lists refuse; the file itself can still be readable with the audio permission.
+        if (found.path != null && !found.path.isEmpty()) {
+            File file = new File(found.path);
+            try (InputStream in = new FileInputStream(file)) {
+                if (file.length() > 0) return send(prefs, callId, in, file.length(), found.mime);
+            } catch (Api.ApiException e) {
+                throw e;
+            } catch (java.io.IOException | RuntimeException e) {
+                problem += "; reading the file failed too (" + e.getClass().getSimpleName() + ")";
+            }
+        }
+        return problem + ".";
+    }
+
+    private static String send(Prefs prefs, long callId, InputStream in, long length, String mime) throws Exception {
+        try {
+            Api.upload(prefs.server(), "/recordings/" + callId, prefs.token(), in, length, mime);
+            return null;
         } catch (Api.ApiException e) {
             // Not a recording WA Reach accepts: say there is none rather than retry forever.
             if (e.status == 415 || e.status == 400) {
                 Api.json("POST", prefs.server(), "/recordings/" + callId + "/none", prefs.token(), null);
-                return true;
+                return "WA Reach didn't accept the file (" + e.getMessage() + ").";
             }
             throw e;
         }
