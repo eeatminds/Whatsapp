@@ -291,7 +291,8 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
   const callAppUrl = (): string | null => {
     const custom = process.env.CALL_APP_URL?.trim();
     if (custom) return custom;
-    return callAppFile && existsSync(callAppFile) ? `${config.publicUrl ?? ''}/downloads/${CALL_APP_FILE}` : null;
+    // The version in the link: a phone or browser that kept an older download fetches the new one.
+    return callAppFile && existsSync(callAppFile) ? `${config.publicUrl ?? ''}/downloads/${CALL_APP_FILE}?v=${CALL_APP_VERSION}` : null;
   };
   await app.register(async scope => registerDeviceRoutes(scope, platform, { ipLimiter, emailLimiter, appUrl: callAppUrl }), { prefix: '/device-api' });
 

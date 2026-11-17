@@ -63,7 +63,7 @@ describe('call tracking from team phones', () => {
     const signIn = await env.app.inject({ method: 'POST', url: '/device-api/login', payload: { email: 'ram@shop.example', password: ram.password, device: 'Samsung Galaxy A15' } });
     expect(signIn.statusCode).toBe(200);
     const session = signIn.json();
-    expect(session).toMatchObject({ business: 'Test Shop', user: { name: 'Ramgopal' }, latestVersion: '1.0.2' });
+    expect(session).toMatchObject({ business: 'Test Shop', user: { name: 'Ramgopal' }, latestVersion: '1.0.3' });
     expect(session.token).toMatch(new RegExp(`^${env.tenantId}\\.[A-Za-z0-9]{40}$`));
     const app = phone(session.token);
     expect((await app('GET', '/status')).body).toMatchObject({ ok: true, business: 'Test Shop' });
@@ -202,7 +202,14 @@ describe('call tracking from team phones', () => {
     const phones = async () => (await admin('GET', '/api/call-devices')).body.items;
 
     await app('POST', '/calls', { device: { callHistory: 'allowed', background: 'restricted' }, calls: [] });
-    expect(await phones()).toMatchObject([{ health: 'working', callHistory: 'allowed', background: 'restricted', problem: null }]);
+    expect(await phones()).toMatchObject([{ health: 'working', callHistory: 'allowed', background: 'restricted', problem: null, dialerRecordings: null }]);
+
+    // Whether the phone's dialer saves call recordings: none in the last week, then found.
+    await app('POST', '/calls', { device: { recordings: 'allowed', recordingsFolder: '', lastRecordingAt: 0 }, calls: [] });
+    expect((await phones())[0].dialerRecordings).toBe('none');
+    const at = env.clock.now().getTime() - 60_000;
+    await app('POST', '/calls', { device: { recordings: 'allowed', recordingsFolder: 'Record/Call/', lastRecordingAt: at }, calls: [] });
+    expect((await phones())[0].dialerRecordings).toEqual({ folder: 'Record/Call/', at: new Date(at).toISOString() });
 
     // Call history access turned off on the phone: the app still checks in and says so.
     await app('POST', '/calls', { device: { callHistory: 'denied', problem: 'IllegalStateException: something broke' }, calls: [] });

@@ -38,7 +38,7 @@ public class MainActivity extends Activity {
 
     private View signin, status;
     private EditText server, email, password;
-    private TextView signinError, connectedAs, permCalls, permRecordings, permBackground, lastSent, keptToday, syncError, update, problem;
+    private TextView signinError, connectedAs, permCalls, permRecordings, permBackground, lastSent, keptToday, syncError, update, problem, recordingsFound;
     private Button connect, allowCalls, allowRecordings, allowBackground, sendNow;
 
     @Override
@@ -77,6 +77,7 @@ public class MainActivity extends Activity {
         sendNow = findViewById(R.id.send_now);
         update = findViewById(R.id.update);
         problem = findViewById(R.id.problem);
+        recordingsFound = findViewById(R.id.recordings_found);
         ((TextView) findViewById(R.id.version)).setText(getString(R.string.version, BuildConfig.VERSION_NAME));
 
         server.setText(prefs.server());
@@ -306,6 +307,13 @@ public class MainActivity extends Activity {
         boolean recordings = Sync.canReadRecordings(this);
         permRecordings.setText(recordings ? R.string.perm_recordings_ok : R.string.perm_recordings_needed);
         allowRecordings.setVisibility(recordings ? View.GONE : View.VISIBLE);
+        boolean checked = recordings && prefs.recordingsCheckedAt() > 0;
+        recordingsFound.setVisibility(checked ? View.VISIBLE : View.GONE);
+        if (checked) {
+            recordingsFound.setText(prefs.recordingsFolder().isEmpty()
+                    ? getString(R.string.recordings_none)
+                    : getString(R.string.recordings_found, prefs.recordingsFolder(), Time.ago(prefs.lastRecordingAt())));
+        }
         boolean background = Sync.runsInBackground(this);
         permBackground.setText(background ? R.string.perm_background_ok : R.string.perm_background_needed);
         allowBackground.setVisibility(background ? View.GONE : View.VISIBLE);

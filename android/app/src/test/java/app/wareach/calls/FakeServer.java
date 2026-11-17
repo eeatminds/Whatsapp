@@ -20,6 +20,10 @@ final class FakeServer implements AutoCloseable {
     final List<String> calls = new CopyOnWriteArrayList<>();
     final List<String> paths = new CopyOnWriteArrayList<>();
     volatile long loginDelayMs = 0;
+    /** What /calls answers with in recordingsWanted (JSON array). */
+    volatile String wanted = "[]";
+    /** Recordings received: "path content-type bytes". */
+    final List<String> recordings = new CopyOnWriteArrayList<>();
     private final ServerSocket socket;
 
     FakeServer() throws IOException {
@@ -47,9 +51,11 @@ final class FakeServer implements AutoCloseable {
             InputStream in = c.getInputStream();
             String requestLine = line(in);
             int length = 0;
+            String type = "";
             for (String header = line(in); !header.isEmpty(); header = line(in)) {
                 String lower = header.toLowerCase(Locale.ROOT);
                 if (lower.startsWith("content-length:")) length = Integer.parseInt(header.substring(15).trim());
+                if (lower.startsWith("content-type:")) type = header.substring(13).trim();
             }
             byte[] body = new byte[length];
             for (int read = 0; read < length; ) {
@@ -59,6 +65,7 @@ final class FakeServer implements AutoCloseable {
             }
             String path = requestLine.split(" ")[1].replaceFirst("^/device-api", "");
             paths.add(path);
+            if (path.startsWith("/recordings/")) recordings.add(path + " " + type + " " + length);
             byte[] reply = reply(path, new String(body, StandardCharsets.UTF_8)).getBytes(StandardCharsets.UTF_8);
             OutputStream out = c.getOutputStream();
             out.write(("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + reply.length + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
@@ -81,7 +88,7 @@ final class FakeServer implements AutoCloseable {
                         + BuildConfig.VERSION_NAME + "\"}";
             case "/calls":
                 calls.add(body);
-                return "{\"stored\":1,\"ignored\":0,\"recordingsWanted\":[]}";
+                return "{\"stored\":1,\"ignored\":0,\"recordingsWanted\":" + wanted + "}";
             default:
                 return "{\"ok\":true}";
         }

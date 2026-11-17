@@ -172,6 +172,15 @@
                         android:text="@string/allow" />
                 </LinearLayout>
 
+                <!-- Whether the phone's dialer is saving call recordings at all. -->
+                <TextView
+                    android:id="@+id/recordings_found"
+                    style="@style/Muted"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="6dp"
+                    android:visibility="gone" />
+
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

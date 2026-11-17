@@ -20,7 +20,7 @@ import type { ContactsService } from './contacts.js';
  */
 
 /** The app version the server expects; older apps are told an update is available. */
-export const CALL_APP_VERSION = '1.0.2';
+export const CALL_APP_VERSION = '1.0.3';
 
 export type CallDirection = 'outgoing' | 'incoming' | 'missed' | 'rejected';
 /** Android's CallLog.Calls.TYPE values. */
@@ -61,6 +61,8 @@ export interface DeviceRow {
   background: 'allowed' | 'restricted' | null;
   problem: string | null;
   problem_at: string | null;
+  recording_folder: string | null;
+  last_recording_at: string | null;
 }
 
 interface CallRow {
@@ -109,6 +111,11 @@ export interface CallDevice {
   health: PhoneHealth;
   /** Why the app last closed unexpectedly, as the phone reported it. */
   problem: { message: string; at: string } | null;
+  /**
+   * The newest call recording the phone's dialer saved: its folder and when. 'none': the dialer
+   * saved none in the last week (call recording is off). null: not reported yet.
+   */
+  dialerRecordings: { folder: string; at: string } | 'none' | null;
 }
 
 /** What a lead's calls look like on the Leads page. */
@@ -131,6 +138,9 @@ const uploadSchema = z.object({
       background: z.enum(['allowed', 'restricted']).optional(),
       /** Why the app last closed unexpectedly (sent once, then cleared on the phone). */
       problem: z.string().trim().min(1).max(2000).optional(),
+      /** Folder of the newest call recording the dialer saved ('' = none in the last week), and when (ms). */
+      recordingsFolder: z.string().trim().max(200).optional(),
+      lastRecordingAt: z.number().int().min(0).optional(),
     })
     .default({}),
   calls: z
@@ -256,6 +266,7 @@ export class CallsService {
         revokedAt: d.revoked_at,
         health: health(d, now),
         problem: d.problem && d.problem_at ? { message: d.problem, at: d.problem_at } : null,
+        dialerRecordings: d.recording_folder === null ? null : d.recording_folder && d.last_recording_at ? { folder: d.recording_folder, at: d.last_recording_at } : 'none',
       }));
   }
 
@@ -276,7 +287,8 @@ export class CallsService {
     this.core.db.run(
       `UPDATE call_devices SET last_seen_at = ?, name = COALESCE(?, name), app_version = COALESCE(?, app_version), recordings = COALESCE(?, recordings),
          call_log = COALESCE(?, call_log), background = COALESCE(?, background),
-         problem = COALESCE(?, problem), problem_at = CASE WHEN ? IS NULL THEN problem_at ELSE ? END
+         problem = COALESCE(?, problem), problem_at = CASE WHEN ? IS NULL THEN problem_at ELSE ? END,
+         recording_folder = COALESCE(?, recording_folder), last_recording_at = CASE WHEN ? IS NULL THEN last_recording_at ELSE ? END
        WHERE id = ?`,
       nowIso(now),
       data.device.name ?? null,
@@ -287,6 +299,9 @@ export class CallsService {
       data.device.problem ?? null,
       data.device.problem ?? null,
       nowIso(now),
+      data.device.recordingsFolder ?? null,
+      data.device.recordingsFolder ?? null,
+      data.device.lastRecordingAt ? iso(data.device.lastRecordingAt) : null,
       device.id,
     );
     const since = Date.parse(device.since);

@@ -56,6 +56,21 @@ final class Scheduler {
         }
     }
 
+    /** One more round in a couple of minutes, for a recording the dialer is still saving. */
+    static void lookAgainSoon(Context context) {
+        if (!new Prefs(context).signedIn()) return;
+        JobScheduler js = context.getSystemService(JobScheduler.class);
+        if (js == null) return;
+        try {
+            js.schedule(new JobInfo.Builder(NOW, new ComponentName(context, SyncJob.class))
+                    .setMinimumLatency(2 * 60_000L)
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .build());
+        } catch (RuntimeException e) {
+            refused(context);
+        }
+    }
+
     static void cancel(Context context) {
         JobScheduler js = context.getSystemService(JobScheduler.class);
         if (js == null) return;

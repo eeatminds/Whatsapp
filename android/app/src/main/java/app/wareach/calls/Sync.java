@@ -50,7 +50,15 @@ final class Sync {
     }
 
     /** Runs one round. Returns false when it should be tried again later. */
-    static synchronized boolean run(Context context) {
+    static boolean run(Context context) {
+        return run(context, true);
+    }
+
+    /**
+     * Runs one round. With lookAgain, a recording the dialer hasn't finished saving yet gets another
+     * look in a couple of minutes, rather than at the next 15-minute round.
+     */
+    static synchronized boolean run(Context context, boolean lookAgain) {
         Prefs prefs = new Prefs(context);
         if (!prefs.signedIn()) return true;
         try {
@@ -63,6 +71,12 @@ final class Sync {
                     .put("recordings", recordings ? "allowed" : "denied")
                     .put("callHistory", callHistory ? "allowed" : "denied")
                     .put("background", runsInBackground(context) ? "allowed" : "restricted");
+            if (recordings) {
+                // Whether the phone's dialer is saving call recordings at all (folder and time only).
+                RecordingFinder.Latest latest = latestRecording(context);
+                device.put("recordingsFolder", latest == null ? "" : latest.folder).put("lastRecordingAt", latest == null ? 0 : latest.at);
+                prefs.recordingsChecked(latest == null ? "" : latest.folder, latest == null ? 0 : latest.at);
+            }
             String problem = prefs.problem();
             if (!problem.isEmpty() && !prefs.problemReported()) device.put("problem", problem);
             if (!callHistory) {
@@ -92,7 +106,7 @@ final class Sync {
                 prefs.synced(lastId, 0);
                 if (entries.size() < BATCH) break;
             }
-            if (recordings) sendRecordings(context, prefs, wanted);
+            if (recordings && sendRecordings(context, prefs, wanted) > 0 && lookAgain) Scheduler.lookAgainSoon(context);
             prefs.synced(lastId, kept);
             return true;
         } catch (Api.ApiException e) {
@@ -108,36 +122,66 @@ final class Sync {
         }
     }
 
-    private static void sendRecordings(Context context, Prefs prefs, JSONArray wanted) throws Exception {
+    private static RecordingFinder.Latest latestRecording(Context context) {
+        try {
+            return RecordingFinder.latest(context);
+        } catch (RuntimeException e) {
+            // Some phones' media index refuses a query; the calls still go out.
+            return null;
+        }
+    }
+
+    /**
+     * Uploads the recordings WA Reach asked for. Returns how many weren't found yet but may still
+     * appear (the dialer can take a moment to save the file); after GIVE_UP_MS WA Reach is told there
+     * is none.
+     */
+    private static int sendRecordings(Context context, Prefs prefs, JSONArray wanted) throws Exception {
         long now = System.currentTimeMillis();
+        int notYet = 0;
         for (int i = 0; i < wanted.length(); i++) {
             JSONObject call = wanted.getJSONObject(i);
             long id = call.getLong("id");
             long startedAt = call.getLong("startedAt");
             int duration = call.getInt("duration");
-            RecordingFinder.Found found = RecordingFinder.find(context, call.getString("number"), startedAt, duration);
-            if (found != null) {
-                // The file's real size now (the media index can lag behind a file still being written).
-                try (AssetFileDescriptor file = context.getContentResolver().openAssetFileDescriptor(found.uri, "r")) {
-                    if (file != null) {
-                        long length = file.getLength() >= 0 ? file.getLength() : file.getParcelFileDescriptor().getStatSize();
-                        try (InputStream in = file.createInputStream()) {
-                            Api.upload(prefs.server(), "/recordings/" + id, prefs.token(), in, length, found.mime);
-                        }
-                        continue;
-                    }
-                } catch (Api.ApiException e) {
-                    // Not a recording WA Reach accepts: say there is none rather than retry forever.
-                    if (e.status == 415 || e.status == 400) {
-                        Api.json("POST", prefs.server(), "/recordings/" + id + "/none", prefs.token(), null);
-                        continue;
-                    }
-                    throw e;
-                }
+            RecordingFinder.Found found;
+            try {
+                found = RecordingFinder.find(context, call.getString("number"), startedAt, duration);
+            } catch (RuntimeException e) {
+                found = null;
             }
+            if (found != null && upload(context, prefs, id, found)) continue;
             if (now > startedAt + duration * 1000L + GIVE_UP_MS) {
                 Api.json("POST", prefs.server(), "/recordings/" + id + "/none", prefs.token(), null);
+            } else {
+                notYet++;
             }
+        }
+        return notYet;
+    }
+
+    /** Sends one recording. False when the file can't be opened (moved, deleted, or not allowed). */
+    private static boolean upload(Context context, Prefs prefs, long callId, RecordingFinder.Found found) throws Exception {
+        AssetFileDescriptor file;
+        try {
+            file = context.getContentResolver().openAssetFileDescriptor(found.uri, "r");
+        } catch (java.io.IOException | RuntimeException e) {
+            return false;
+        }
+        if (file == null) return false;
+        try (AssetFileDescriptor f = file; InputStream in = f.createInputStream()) {
+            // The file's real size now (the media index can lag behind a file still being written).
+            long length = f.getLength() >= 0 ? f.getLength() : f.getParcelFileDescriptor().getStatSize();
+            if (length <= 0) return false;
+            Api.upload(prefs.server(), "/recordings/" + callId, prefs.token(), in, length, found.mime);
+            return true;
+        } catch (Api.ApiException e) {
+            // Not a recording WA Reach accepts: say there is none rather than retry forever.
+            if (e.status == 415 || e.status == 400) {
+                Api.json("POST", prefs.server(), "/recordings/" + callId + "/none", prefs.token(), null);
+                return true;
+            }
+            throw e;
         }
     }
 }

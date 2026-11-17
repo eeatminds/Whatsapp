@@ -67,6 +67,23 @@ final class Prefs {
         return p.getString("keptDay", "").equals(Time.today()) ? p.getInt("keptToday", 0) : 0;
     }
 
+    /** The folder of the newest call recording found on the phone ("" for none), when it was made, and when this was checked. */
+    String recordingsFolder() {
+        return p.getString("recordingsFolder", "");
+    }
+
+    long lastRecordingAt() {
+        return p.getLong("lastRecordingAt", 0);
+    }
+
+    long recordingsCheckedAt() {
+        return p.getLong("recordingsCheckedAt", 0);
+    }
+
+    void recordingsChecked(String folder, long at) {
+        p.edit().putString("recordingsFolder", folder).putLong("lastRecordingAt", at).putLong("recordingsCheckedAt", System.currentTimeMillis()).apply();
+    }
+
     /** Why the app last closed unexpectedly (empty if it never did), and when. */
     String problem() {
         return p.getString("problem", "");

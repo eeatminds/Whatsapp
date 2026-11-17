@@ -10,7 +10,8 @@ public class SyncJob extends JobService {
         new Thread(() -> {
             boolean done = true;
             try {
-                done = Sync.run(getApplicationContext());
+                // The look-again round doesn't schedule another, so it can't repeat on its own.
+                done = Sync.run(getApplicationContext(), params.getJobId() != Scheduler.NOW);
             } finally {
                 if (params.getJobId() == Scheduler.AFTER_A_CALL) Scheduler.armCallTrigger(getApplicationContext());
                 // The 15-minute job comes round again anyway; others retry with Android's backoff.

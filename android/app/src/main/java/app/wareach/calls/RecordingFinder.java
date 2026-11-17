@@ -64,8 +64,9 @@ final class RecordingFinder {
                 boolean named = !digits.isEmpty() && name.replaceAll("\\D", "").contains(digits);
                 boolean inCallFolder = (path + "/" + name).toLowerCase(Locale.ROOT).contains("call");
                 if (!named && !inCallFolder) continue;
-                // A recording much longer or shorter than the call is another call's.
-                if (length > 0 && Math.abs(length / 1000 - durationSec) > Math.max(20, durationSec / 4)) continue;
+                // A recording much longer or shorter than the call is another call's. Some dialers start
+                // recording while the call is still ringing, so a recording may run longer by that much.
+                if (length > 0 && !lengthFits(length / 1000, durationSec)) continue;
                 long modified = c.getLong(4) * 1000;
                 long score = Math.abs(modified - callEnd) - (named ? 3_600_000L : 0);
                 if (score < bestScore) {
@@ -76,6 +77,49 @@ final class RecordingFinder {
             }
         }
         return best;
+    }
+
+    static boolean lengthFits(long recordingSec, int callSec) {
+        long slack = Math.max(15, callSec / 4);
+        return recordingSec >= callSec - slack && recordingSec <= callSec + slack + 75;
+    }
+
+    /** Where this phone's dialer saved its newest call recording (folder only), and when. */
+    static final class Latest {
+        final String folder;
+        final long at;
+
+        Latest(String folder, long at) {
+            this.folder = folder;
+            this.at = at;
+        }
+    }
+
+    /**
+     * The newest call recording on the phone in the last week, or null when there is none: tells the
+     * caller and the admin whether the phone's dialer is recording calls at all. Only the folder and
+     * the time are kept, never the file's name or what is in it.
+     */
+    static Latest latest(Context context) {
+        Uri collection = Build.VERSION.SDK_INT >= 29
+                ? MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+                : MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+        String folder = Build.VERSION.SDK_INT >= 29 ? MediaStore.Audio.Media.RELATIVE_PATH : MediaStore.Audio.Media.DATA;
+        String[] columns = {MediaStore.Audio.Media.DISPLAY_NAME, folder, MediaStore.Audio.Media.DATE_ADDED};
+        String where = MediaStore.Audio.Media.DATE_ADDED + " >= ?";
+        String[] args = {String.valueOf(System.currentTimeMillis() / 1000 - 7 * 86_400)};
+        try (Cursor c = context.getContentResolver().query(collection, columns, where, args, MediaStore.Audio.Media.DATE_ADDED + " DESC")) {
+            if (c == null) return null;
+            for (int seen = 0; c.moveToNext() && seen < 500; seen++) {
+                String name = c.getString(0) == null ? "" : c.getString(0);
+                String path = c.getString(1) == null ? "" : c.getString(1);
+                if (!(path + "/" + name).toLowerCase(Locale.ROOT).contains("call")) continue;
+                // Before Android 10 the column is the file's full path: keep only its folder.
+                String dir = Build.VERSION.SDK_INT >= 29 ? path : path.substring(0, Math.max(0, path.lastIndexOf('/') + 1)).replaceFirst("^/storage/emulated/0/", "");
+                return new Latest(dir.length() > 120 ? dir.substring(dir.length() - 120) : dir, c.getLong(2) * 1000);
+            }
+        }
+        return null;
     }
 
     private static String lastDigits(String number, int n) {

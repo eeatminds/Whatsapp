@@ -689,6 +689,8 @@ export interface CallDevice {
   health: 'working' | 'quiet' | 'stopped' | 'no_call_access';
   /** Why the app last closed unexpectedly, as the phone reported it. */
   problem: { message: string; at: string } | null;
+  /** Newest call recording the phone's dialer saved (folder, when); 'none' when recording looks off; null before the phone says. */
+  dialerRecordings: { folder: string; at: string } | 'none' | null;
 }
 
 export interface LeadCalls {

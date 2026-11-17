@@ -491,4 +491,10 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE call_devices ADD COLUMN problem TEXT;
   ALTER TABLE call_devices ADD COLUMN problem_at TEXT;
   `,
+  // 19: where the phone's dialer saves call recordings ('' = none found in the last week) and when
+  // it last made one, so the admin can tell "recording is off on this phone" from "still waiting".
+  `
+  ALTER TABLE call_devices ADD COLUMN recording_folder TEXT;
+  ALTER TABLE call_devices ADD COLUMN last_recording_at TEXT;
+  `,
 ];
