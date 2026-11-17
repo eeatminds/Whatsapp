@@ -15,6 +15,10 @@ import { MetaError } from './meta/client.js';
 import { parseCookies, serializeCookie, signSession, verifySession, verifyOpenWASignature } from './lib/crypto.js';
 import { isBotUserAgent } from './lib/links.js';
 import { CALLER_REFUSED, callerMayUse, isCaller } from './lib/permissions.js';
+import { registerDeviceRoutes } from './routes/device.js';
+import { CALL_APP_VERSION } from './services/calls.js';
+
+const CALL_APP_FILE = 'wa-reach-calls.apk';
 import { registerApiRoutes } from './routes/api.js';
 import type { WebhookEnvelope } from './services/inbound.js';
 
@@ -280,6 +284,17 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
   await app.register(async scope => registerAdminRoutes(scope, platform, enter), { prefix: '/api/admin' });
   await app.register(async scope => registerAccountRoutes(scope, platform), { prefix: '/api/account' });
 
+  // ---------------------------------------------------------------- the WA Reach Calls phone app
+
+  // The APK ships with the web app (web/public/downloads); CALL_APP_URL can point somewhere else.
+  const callAppFile = options.staticDir ? join(options.staticDir, 'downloads', CALL_APP_FILE) : null;
+  const callAppUrl = (): string | null => {
+    const custom = process.env.CALL_APP_URL?.trim();
+    if (custom) return custom;
+    return callAppFile && existsSync(callAppFile) ? `${config.publicUrl ?? ''}/downloads/${CALL_APP_FILE}` : null;
+  };
+  await app.register(async scope => registerDeviceRoutes(scope, platform, { ipLimiter, emailLimiter, appUrl: callAppUrl }), { prefix: '/device-api' });
+
   // ---------------------------------------------------------------- OpenWA webhooks (raw body, HMAC), one URL per business
 
   await app.register(async scope => {
@@ -457,6 +472,7 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
       await registerApiRoutes(scope, core, services, {
         metaGuideVideoUrl: () => platform.settings().metaGuideVideoUrl || null,
         supportContact: () => platform.settings().supportContact || null,
+        callApp: () => ({ url: callAppUrl(), version: CALL_APP_VERSION }),
         team: () =>
           platform
             .users(current().tenantId)

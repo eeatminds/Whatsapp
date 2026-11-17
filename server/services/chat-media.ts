@@ -211,6 +211,27 @@ export class ChatMediaService {
     return result;
   }
 
+  /**
+   * Delete Inbox messages (and their downloaded files) older than `days`, to keep hosting space in
+   * check. Contacts, leads, remarks and campaign history are untouched: only the chat log is trimmed,
+   * so a conversation with no message in the last `days` days drops out of the Inbox entirely. `days`
+   * of 0 keeps everything. Returns how many messages and files were removed.
+   */
+  pruneOldMessages(days: number): { messages: number; files: number } {
+    if (!days || days < 1) return { messages: 0, files: 0 };
+    const cutoff = new Date(this.core.clock().getTime() - days * 86_400_000).toISOString();
+    const files: string[] = [];
+    for (const row of this.core.db.all<{ media_file: string | null }>(
+      'SELECT media_file FROM messages WHERE created_at < ? AND media_file IS NOT NULL',
+      cutoff,
+    )) {
+      if (row.media_file && /^m\d+$/.test(row.media_file)) files.push(row.media_file);
+    }
+    const messages = this.core.db.run('DELETE FROM messages WHERE created_at < ?', cutoff).changes;
+    for (const name of files) rmSync(join(this.dir(), name), { force: true });
+    return { messages, files: files.length };
+  }
+
   /** Waits for downloads in progress (for shutdown and tests). */
   async idle(): Promise<void> {
     await Promise.all([...this.reading.values()].map(r => r.run.catch(() => undefined)));

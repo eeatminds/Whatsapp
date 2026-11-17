@@ -4,6 +4,7 @@ import { post, useApi } from '../api';
 import { useSession } from '../session';
 import { formatDate } from '../format';
 import {
+  IconCall,
   IconChart,
   IconFilter,
   IconHome,
@@ -162,6 +163,9 @@ export function Layout({ children, onLogout }: { children: ReactNode; onLogout: 
           </NavItem>
           <NavItem to="/leads" icon={<IconChart />}>
             Leads
+          </NavItem>
+          <NavItem to="/calls" icon={<IconCall />}>
+            Calls
           </NavItem>
           <div className="nav-section">Marketing</div>
           <NavItem to="/campaigns" icon={<IconMegaphone />}>

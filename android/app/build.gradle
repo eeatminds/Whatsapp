@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Release builds are signed with the key in WA_REACH_KEYSTORE (a .jks file) and
+// WA_REACH_KEYSTORE_PASSWORD. Every release must use the same key, or phones refuse the update.
+def keystorePath = System.getenv('WA_REACH_KEYSTORE')
+def keystorePassword = System.getenv('WA_REACH_KEYSTORE_PASSWORD')
+def canSign = keystorePath && keystorePassword && file(keystorePath).exists()
+
+android {
+    namespace 'app.wareach.calls'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'app.wareach.calls'
+        minSdk 26
+        targetSdk 35
+        // Keep in step with CALL_APP_VERSION in server/services/calls.ts.
+        versionCode 1
+        versionName '1.0.0'
+        // The WA Reach address shown on the sign-in screen (it can be changed there).
+        buildConfigField 'String', 'DEFAULT_SERVER', "\"${System.getenv('WA_REACH_SERVER') ?: 'https://wa.eeatminds.in'}\""
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    signingConfigs {
+        if (canSign) {
+            release {
+                storeFile file(keystorePath)
+                storePassword keystorePassword
+                keyAlias 'wa-reach-calls'
+                keyPassword keystorePassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (canSign) signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

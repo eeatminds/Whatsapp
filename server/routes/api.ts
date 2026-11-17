@@ -3,12 +3,14 @@ import { z } from 'zod';
 import type { Core } from '../context.js';
 import type { Services } from '../services/index.js';
 import { badRequest, notFound } from '../lib/errors.js';
-import { callerLeadOwner, isCaller } from '../lib/permissions.js';
+import { callerScope } from '../lib/permissions.js';
 import { chatIdFor } from '../lib/phone.js';
 import { contactFilterSchema } from '../services/contacts.js';
 import { matchesRule, normalizeKeywordText } from '../services/auto-replies.js';
 import { ACCEPTED_MIME_TYPES } from '../services/media.js';
 import { mediaKind } from '../services/messages.js';
+import { CALL_APP_VERSION } from '../services/calls.js';
+import { createReadStream } from 'node:fs';
 
 /** Files from WhatsApp shown inside the Inbox; anything else (documents, odd types) is downloaded. */
 const INLINE_MEDIA = /^(image\/(jpeg|png|gif|webp)|video\/(mp4|webm|3gpp)|audio\/(ogg|mpeg|mp4|aac|amr|wav|webm|opus))$/;
@@ -55,6 +57,8 @@ export interface PlatformInfo {
   supportContact(): string | null;
   /** People who can sign in to this business (and so can be given leads). */
   team(): TeamMember[];
+  /** Where team members download the WA Reach Calls phone app, and its current version. */
+  callApp(): { url: string | null; version: string };
 }
 
 export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Services, platform?: PlatformInfo): Promise<void> {
@@ -67,10 +71,20 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
     const ids = (body as { actions?: { assignTo?: unknown } } | null)?.actions?.assignTo;
     if (Array.isArray(ids)) for (const userId of ids) checkTeamMember(Number(userId));
   };
-  /** A caller limited to their own leads only ever sees and changes those. */
-  const scoped = <T extends { assignee?: string }>(request: FastifyRequest, filter: T): T => {
-    const owner = callerLeadOwner(request);
-    return owner === null ? filter : { ...filter, assignee: String(owner) };
+  /** A caller only ever sees and changes the leads their scope allows: their own, all, or one tag's. */
+  const scoped = <T extends { assignee?: string; tagId?: number }>(request: FastifyRequest, filter: T): T => {
+    const scope = callerScope(request);
+    if (!scope || scope.type === 'all') return filter;
+    if (scope.type === 'tag') return { ...filter, tagId: scope.tagId, assignee: undefined };
+    return { ...filter, assignee: String(scope.userId) };
+  };
+  /** True when a caller may work this lead (within their scope); also true for anyone who isn't a caller. */
+  const callerMayWorkLead = (request: FastifyRequest, contactId: number): boolean => {
+    const scope = callerScope(request);
+    if (!scope || scope.type === 'all') return true;
+    if (!s.contacts.get(contactId).saved) return false;
+    if (scope.type === 'tag') return s.contacts.hasTag(contactId, scope.tagId);
+    return s.contacts.assigneeOf(contactId) === scope.userId;
   };
 
   /** Internal addresses and raw gateway errors are for the platform admin only. */
@@ -296,10 +310,8 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
     const user = request.auth?.user;
     const by = user ? (user.name?.trim() || user.email) : 'API';
     const { id } = params(idParam, request);
-    const owner = callerLeadOwner(request);
-    // A caller can't tell a lead given to someone else from one that doesn't exist.
-    if (owner !== null && s.contacts.assigneeOf(id) !== owner) throw notFound('Lead');
-    if (isCaller(request) && !s.contacts.get(id).saved) throw notFound('Lead');
+    // A caller can't tell a lead outside their scope from one that doesn't exist.
+    if (!callerMayWorkLead(request, id)) throw notFound('Lead');
     return s.contacts.setLead(id, request.body, by);
   });
 
@@ -488,6 +500,50 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
   });
 
   // A photo, video, voice note or document from a WhatsApp chat: downloaded once, then kept here.
+  // ---------------------------------------------------------------- calls from team phones
+
+  /** Where to get the phone app, its version, and how many phones the signed-in person has connected. */
+  app.get('/call-app', async request => {
+    const me = request.auth?.user?.id;
+    return { ...(platform?.callApp() ?? { url: null, version: CALL_APP_VERSION }), myPhones: me ? s.calls.devices().filter(d => d.userId === me).length : 0 };
+  });
+  app.get('/call-devices', async () => ({ items: s.calls.devices() }));
+  /** Sign a phone out: it stops sending calls until someone signs in on it again. */
+  app.delete('/call-devices/:id', async request => {
+    s.calls.revoke(params(idParam, request).id);
+    return { ok: true };
+  });
+  app.get('/calls', async request => s.calls.list(request.query));
+  app.get('/calls/report', async request => s.calls.report(request.query));
+
+  /** Calls per lead for the Leads page. A caller only gets the leads they can see. */
+  app.get('/calls/summary', async request => {
+    const { ids } = z.object({ ids: z.string().regex(/^[1-9]\d{0,9}(,[1-9]\d{0,9}){0,199}$/, 'List up to 200 lead ids') }).parse(request.query);
+    let list = [...new Set(ids.split(',').map(Number))];
+    const scope = callerScope(request);
+    if (scope && scope.type !== 'all') {
+      // Only the caller's own leads (their assignment, or the one tag they're limited to).
+      const cond = scope.type === 'tag' ? 'EXISTS (SELECT 1 FROM contact_tags ct WHERE ct.contact_id = c.id AND ct.tag_id = ?)' : 'c.assigned_to = ?';
+      const arg = scope.type === 'tag' ? scope.tagId : scope.userId;
+      list = core.db
+        .all<{ id: number }>(`SELECT c.id FROM contacts c WHERE c.saved = 1 AND c.id IN (SELECT value FROM json_each(?)) AND ${cond}`, JSON.stringify(list), arg)
+        .map(r => r.id);
+    }
+    return s.calls.summary(list);
+  });
+
+  app.get('/calls/:id/recording', async (request, reply) => {
+    const file = s.calls.recording(params(idParam, request).id);
+    const inline = INLINE_MEDIA.test(file.mime);
+    return reply
+      .header('Content-Type', inline ? file.mime : 'application/octet-stream')
+      .header('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${file.name.replace(/[^\w.-]/g, '_')}"`)
+      .header('Content-Security-Policy', "default-src 'none'; media-src 'self'; sandbox")
+      .header('Cross-Origin-Resource-Policy', 'same-origin')
+      .header('Cache-Control', 'private, max-age=3600')
+      .send(createReadStream(file.path));
+  });
+
   app.get('/inbox/media/:id', async (request, reply) => {
     const { id } = params(idParam, request);
     const query = z.object({ download: z.enum(['1']).optional(), retry: z.enum(['1']).optional() }).parse(request.query);
@@ -573,6 +629,9 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
     // Sending limits are part of the plan the platform admin sells; a business can't raise its own.
     const body = { ...((request.body as Record<string, unknown> | null) ?? {}) };
     if (request.auth?.user?.role !== 'platform_admin') delete body.sending;
+    // New leads can only be auto-assigned to people who can sign in to this business.
+    const auto = (body as { autoAssign?: { userIds?: unknown } }).autoAssign;
+    if (auto && Array.isArray(auto.userIds)) for (const userId of auto.userIds) checkTeamMember(Number(userId));
     const before = s.settings.get();
     const next = s.settings.update(body);
     // Turning the Indian/International tags on (or changing the business's country) tags everyone.

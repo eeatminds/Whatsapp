@@ -500,6 +500,12 @@ export interface Settings {
   sending: { sessionMaxPerMinute: number; dailyCapPerSession: number; frequencyCapHours: number; breakerThreshold: number; defaultPerMinute: number };
   compliance: { optOutKeywords: string[]; optInKeywords: string[]; optOutReply: string; optInReply: string; optOutFooter: string };
   attributionWindowHours: number;
+  /** Call recordings from team phones are deleted after this many days. */
+  callRecordingDays: number;
+  /** Share every new lead out round-robin between callers (a lead source that names people still wins). */
+  autoAssign: { enabled: boolean; among: 'all' | 'chosen'; userIds: number[] };
+  /** Delete Inbox messages (and their files) older than this many days to save space; 0 keeps them. */
+  inboxRetentionDays: number;
 }
 
 export interface SystemInfo {
@@ -562,8 +568,10 @@ export interface PlatformUser {
   disabled: boolean;
   lastLoginAt: string | null;
   createdAt: string;
-  /** Which leads a caller sees: only those given to them, or all. */
-  leadScope: 'assigned' | 'all';
+  /** Which leads a caller sees: only those given to them, all, or only those with one tag. */
+  leadScope: 'assigned' | 'all' | 'tag';
+  /** With leadScope 'tag': the tag id whose leads this caller sees. */
+  leadTag: number | null;
 }
 
 /** Someone who can sign in to the business, and so can be given leads. */
@@ -639,4 +647,74 @@ export interface HealthIssue {
 export interface HealthReport {
   issues: HealthIssue[];
   backup: { lastRunAt: string | null; lastOkAt: string | null; lastError: string | null; lastFile: string | null } | null;
+}
+
+// ---------------------------------------------------------------- calls from team phones
+
+export type CallDirection = 'outgoing' | 'incoming' | 'missed' | 'rejected';
+
+export interface CallRecord {
+  id: number;
+  userId: number;
+  contactId: number | null;
+  contactName: string | null;
+  phone: string;
+  direction: CallDirection;
+  startedAt: string;
+  /** Seconds talked; 0 when nobody answered. */
+  duration: number;
+  answered: boolean;
+  recording: 'pending' | 'saved' | 'none' | 'deleted';
+  recordingMime: string | null;
+  device: string;
+}
+
+export interface CallDevice {
+  id: number;
+  userId: number;
+  name: string;
+  appVersion: string | null;
+  recordings: 'allowed' | 'denied' | null;
+  connectedAt: string;
+  lastSeenAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface LeadCalls {
+  calls: number;
+  answered: number;
+  talkSeconds: number;
+  last: { at: string; duration: number; direction: CallDirection; userId: number } | null;
+  /** The lead has a remark but no call was recorded before it. */
+  remarkWithoutCall: boolean;
+}
+
+export interface CallsSummary {
+  /** False until the business connects its first phone. */
+  tracking: boolean;
+  leads: Record<string, LeadCalls>;
+}
+
+export interface CallsReportRow {
+  userId: number;
+  calls: number;
+  outgoing: number;
+  answered: number;
+  talkSeconds: number;
+  leadsCalled: number;
+  recorded: number;
+  remarksWithoutCall: number;
+}
+
+export interface CallsReport {
+  tracking: boolean;
+  people: CallsReportRow[];
+  devices: CallDevice[];
+}
+
+export interface CallApp {
+  url: string | null;
+  version: string;
+  /** Phones the signed-in person has connected. */
+  myPhones: number;
 }

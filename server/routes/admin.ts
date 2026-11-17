@@ -95,6 +95,7 @@ export async function registerAdminRoutes(app: FastifyInstance, platform: Platfo
     if (platform.user(userId)?.tenant_id !== id) throw notFound('User');
     platform.deleteUser(userId);
     platform.runtime(id).services.leads.forgetTeamMember(userId);
+    platform.runtime(id).services.calls.revokeUser(userId);
     return { ok: true };
   });
 
@@ -189,6 +190,13 @@ export async function registerAccountRoutes(app: FastifyInstance, platform: Plat
     return target;
   };
 
+  /** A caller limited to one tag must point at a tag that exists in this business. */
+  const checkTag = (request: FastifyRequest, tagId: unknown) => {
+    if (tagId == null) return;
+    const id = Number(tagId);
+    if (Number.isInteger(id) && id > 0 && !platform.runtime(tenantOf(request)).services.tags.exists(id)) throw badRequest('That tag no longer exists');
+  };
+
   app.post('/users', async (request, reply) => {
     requireOwner(request);
     const body = z
@@ -196,9 +204,11 @@ export async function registerAccountRoutes(app: FastifyInstance, platform: Plat
         email: z.string(),
         name: z.string().optional(),
         role: z.enum(['member', 'caller']).default('member'),
-        leadScope: z.enum(['assigned', 'all']).optional(),
+        leadScope: z.enum(['assigned', 'all', 'tag']).optional(),
+        leadTag: z.coerce.number().int().positive().nullish(),
       })
       .parse(request.body);
+    checkTag(request, body.leadTag);
     return reply.status(201).send(platform.addUser(tenantOf(request), body));
   });
 
@@ -206,6 +216,7 @@ export async function registerAccountRoutes(app: FastifyInstance, platform: Plat
   app.patch('/users/:userId', async request => {
     requireOwner(request);
     const target = teamMember(request);
+    checkTag(request, (request.body as { leadTag?: unknown } | null)?.leadTag);
     return platform.updateTeamMember(tenantOf(request), target.id, request.body);
   });
 
@@ -223,6 +234,8 @@ export async function registerAccountRoutes(app: FastifyInstance, platform: Plat
     platform.deleteUser(target.id);
     // Their leads go back to "not given to anyone", and lead sources stop giving them new ones.
     platform.runtime(tenantOf(request)).services.leads.forgetTeamMember(target.id);
+    // Their phones stop sending calls; the calls they made stay on record.
+    platform.runtime(tenantOf(request)).services.calls.revokeUser(target.id);
     return { ok: true };
   });
 }

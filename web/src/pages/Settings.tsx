@@ -154,6 +154,29 @@ export function SettingsPage() {
         </div>
       </Card>
 
+      <Card
+        title="Inbox cleanup"
+        subtitle="Old chat messages take up server space. Contacts, leads, remarks and call history are always kept — only the message history is trimmed."
+      >
+        <div className="row wrap" style={{ gap: 16, alignItems: 'flex-end' }}>
+          <Toggle
+            checked={form.inboxRetentionDays > 0}
+            onChange={on => setForm({ ...form, inboxRetentionDays: on ? form.inboxRetentionDays || 30 : 0 })}
+            label="Delete old conversations automatically"
+          />
+          {form.inboxRetentionDays > 0 && (
+            <Field label="Delete messages older than (days)" hint="A conversation with no message for this long disappears from the Inbox. 7–3650 days.">
+              <NumberInput value={form.inboxRetentionDays} min={7} max={3650} onChange={v => setForm({ ...form, inboxRetentionDays: v })} />
+            </Field>
+          )}
+        </div>
+        {form.inboxRetentionDays > 0 && (
+          <p className="hint" style={{ marginTop: 8 }}>
+            Messages older than {form.inboxRetentionDays} days (and their photos and documents) are removed each day. This can't be undone.
+          </p>
+        )}
+      </Card>
+
       <Card title="Quiet hours" subtitle="Campaigns and drip messages wait during these hours. Replies to people who message you still go out.">
         <div className="row wrap" style={{ gap: 16 }}>
           <Toggle checked={form.quietHours.enabled} onChange={enabled => setForm({ ...form, quietHours: { ...form.quietHours, enabled } })} label="Enabled" />
