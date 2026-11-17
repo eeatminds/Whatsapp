@@ -82,7 +82,7 @@ public class MainActivity extends Activity {
         sendNow.setOnClickListener(v -> sendNow());
         findViewById(R.id.sign_out).setOnClickListener(v -> confirmSignOut());
         update.setOnClickListener(v -> {
-            if (!prefs.appUrl().isEmpty()) startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(prefs.appUrl())));
+            if (!prefs.appUrl().isEmpty()) open(new Intent(Intent.ACTION_VIEW, Uri.parse(prefs.appUrl())));
         });
     }
 
@@ -211,7 +211,7 @@ public class MainActivity extends Activity {
         if (checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) return;
         // After "Don't allow" twice, Android stops asking: open the app's settings instead.
         if (getSharedPreferences("asked", MODE_PRIVATE).getBoolean(permission, false) && !shouldShowRequestPermissionRationale(permission)) {
-            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
+            open(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
             return;
         }
         getSharedPreferences("asked", MODE_PRIVATE).edit().putBoolean(permission, true).apply();
@@ -238,10 +238,18 @@ public class MainActivity extends Activity {
     }
 
     private void allowBackground() {
+        if (!open(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName())))) {
+            open(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+        }
+    }
+
+    /** Opens a settings screen or link. Some phone makers remove screens; that must not close the app. */
+    private boolean open(Intent intent) {
         try {
-            startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName())));
-        } catch (Exception e) {
-            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+            startActivity(intent);
+            return true;
+        } catch (RuntimeException e) {
+            return false;
         }
     }
 
@@ -253,7 +261,11 @@ public class MainActivity extends Activity {
         sendNow.setEnabled(false);
         sendNow.setText(R.string.sending);
         io.execute(() -> {
-            Sync.run(getApplicationContext());
+            try {
+                Sync.run(getApplicationContext());
+            } catch (RuntimeException ignored) {
+                // Sync records its own errors; a surprise here must not close the app.
+            }
             main.post(() -> {
                 busy = false;
                 sendNow.setEnabled(true);

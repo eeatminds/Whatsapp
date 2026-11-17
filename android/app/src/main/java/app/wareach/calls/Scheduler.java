@@ -9,6 +9,10 @@ import android.provider.CallLog;
 /**
  * Two jobs: one every 15 minutes (Android's shortest), and one that runs right after a call ends,
  * when the call log changes.
+ *
+ * Android can refuse to schedule a job (a missing permission on a newer Android version, or a
+ * phone maker's own limits). That must never close the app, so each request is guarded and a
+ * refusal is shown on the app's screen instead.
  */
 final class Scheduler {
     private Scheduler() {}
@@ -20,12 +24,17 @@ final class Scheduler {
     static void schedule(Context context) {
         if (!new Prefs(context).signedIn()) return;
         JobScheduler js = context.getSystemService(JobScheduler.class);
-        if (js.getPendingJob(EVERY_15_MIN) == null) {
-            js.schedule(new JobInfo.Builder(EVERY_15_MIN, new ComponentName(context, SyncJob.class))
-                    .setPeriodic(15 * 60_000L)
-                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                    .setPersisted(true)
-                    .build());
+        if (js == null) return;
+        try {
+            if (js.getPendingJob(EVERY_15_MIN) == null) {
+                js.schedule(new JobInfo.Builder(EVERY_15_MIN, new ComponentName(context, SyncJob.class))
+                        .setPeriodic(15 * 60_000L)
+                        .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                        .setPersisted(true)
+                        .build());
+            }
+        } catch (RuntimeException e) {
+            refused(context);
         }
         armCallTrigger(context);
     }
@@ -34,23 +43,30 @@ final class Scheduler {
     static void armCallTrigger(Context context) {
         if (!new Prefs(context).signedIn()) return;
         JobScheduler js = context.getSystemService(JobScheduler.class);
-        js.schedule(new JobInfo.Builder(AFTER_A_CALL, new ComponentName(context, SyncJob.class))
-                .addTriggerContentUri(new JobInfo.TriggerContentUri(CallLog.Calls.CONTENT_URI, JobInfo.TriggerContentUri.FLAG_NOTIFY_FOR_DESCENDANTS))
-                .setTriggerContentUpdateDelay(5_000)
-                .setTriggerContentMaxDelay(60_000)
-                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                .build());
-    }
-
-    /** "Send now": runs as soon as there is a network. */
-    static void now(Context context) {
-        JobScheduler js = context.getSystemService(JobScheduler.class);
-        js.schedule(new JobInfo.Builder(NOW, new ComponentName(context, SyncJob.class))
-                .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                .build());
+        if (js == null) return;
+        try {
+            js.schedule(new JobInfo.Builder(AFTER_A_CALL, new ComponentName(context, SyncJob.class))
+                    .addTriggerContentUri(new JobInfo.TriggerContentUri(CallLog.Calls.CONTENT_URI, JobInfo.TriggerContentUri.FLAG_NOTIFY_FOR_DESCENDANTS))
+                    .setTriggerContentUpdateDelay(5_000)
+                    .setTriggerContentMaxDelay(60_000)
+                    .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
+                    .build());
+        } catch (RuntimeException e) {
+            refused(context);
+        }
     }
 
     static void cancel(Context context) {
-        context.getSystemService(JobScheduler.class).cancelAll();
+        JobScheduler js = context.getSystemService(JobScheduler.class);
+        if (js == null) return;
+        try {
+            js.cancelAll();
+        } catch (RuntimeException ignored) {
+            // Nothing scheduled to cancel.
+        }
+    }
+
+    private static void refused(Context context) {
+        new Prefs(context).failed(context.getString(R.string.error_background));
     }
 }

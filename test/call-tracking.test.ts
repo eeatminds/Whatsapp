@@ -62,7 +62,7 @@ describe('call tracking from team phones', () => {
     const signIn = await env.app.inject({ method: 'POST', url: '/device-api/login', payload: { email: 'ram@shop.example', password: ram.password, device: 'Samsung Galaxy A15' } });
     expect(signIn.statusCode).toBe(200);
     const session = signIn.json();
-    expect(session).toMatchObject({ business: 'Test Shop', user: { name: 'Ramgopal' }, latestVersion: '1.0.0' });
+    expect(session).toMatchObject({ business: 'Test Shop', user: { name: 'Ramgopal' }, latestVersion: '1.0.1' });
     expect(session.token).toMatch(new RegExp(`^${env.tenantId}\\.[A-Za-z0-9]{40}$`));
     const app = phone(session.token);
     expect((await app('GET', '/status')).body).toMatchObject({ ok: true, business: 'Test Shop' });

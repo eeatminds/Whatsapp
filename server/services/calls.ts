@@ -20,7 +20,7 @@ import type { ContactsService } from './contacts.js';
  */
 
 /** The app version the server expects; older apps are told an update is available. */
-export const CALL_APP_VERSION = '1.0.0';
+export const CALL_APP_VERSION = '1.0.1';
 
 export type CallDirection = 'outgoing' | 'incoming' | 'missed' | 'rejected';
 /** Android's CallLog.Calls.TYPE values. */
