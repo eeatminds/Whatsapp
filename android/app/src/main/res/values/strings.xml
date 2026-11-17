@@ -36,6 +36,7 @@
     <string name="error_offline">Couldn\'t reach WA Reach. It will try again when the phone is online.</string>
     <string name="recordings_found">Newest call recording on this phone: %1$s, %2$s. Recordings of calls with leads are sent.</string>
     <string name="recordings_none">No call recordings found on this phone in the last week. Turn on automatic call recording in the Phone app\'s settings, then calls with leads are sent with their recording.</string>
+    <string name="recording_report">Last recording check: %1$s</string>
     <string name="version">WA Reach Calls %1$s</string>
     <string name="problem_last_time">The app closed unexpectedly %1$s. The reason below is shared with your WA Reach admin so it can be fixed:\n%2$s</string>
     <string name="error_background">This phone didn\'t let the app send in the background. Open the app and tap Send now after your calls.</string>

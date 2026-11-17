@@ -310,9 +310,11 @@ public class MainActivity extends Activity {
         boolean checked = recordings && prefs.recordingsCheckedAt() > 0;
         recordingsFound.setVisibility(checked ? View.VISIBLE : View.GONE);
         if (checked) {
-            recordingsFound.setText(prefs.recordingsFolder().isEmpty()
+            String found = prefs.recordingsFolder().isEmpty()
                     ? getString(R.string.recordings_none)
-                    : getString(R.string.recordings_found, prefs.recordingsFolder(), Time.ago(prefs.lastRecordingAt())));
+                    : getString(R.string.recordings_found, prefs.recordingsFolder(), Time.ago(prefs.lastRecordingAt()));
+            String report = prefs.recordingReport();
+            recordingsFound.setText(report.isEmpty() ? found : found + "\n" + getString(R.string.recording_report, report));
         }
         boolean background = Sync.runsInBackground(this);
         permBackground.setText(background ? R.string.perm_background_ok : R.string.perm_background_needed);

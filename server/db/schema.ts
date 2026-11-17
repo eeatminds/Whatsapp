@@ -497,4 +497,10 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE call_devices ADD COLUMN recording_folder TEXT;
   ALTER TABLE call_devices ADD COLUMN last_recording_at TEXT;
   `,
+  // 20: what the phone found when it last looked for a call's recording, in words ("no audio file
+  // was saved around it", "found it in Record/Call/ but couldn't open it"), for the admin.
+  `
+  ALTER TABLE call_devices ADD COLUMN recording_check TEXT;
+  ALTER TABLE call_devices ADD COLUMN recording_check_at TEXT;
+  `,
 ];

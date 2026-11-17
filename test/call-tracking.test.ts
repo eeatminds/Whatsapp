@@ -63,7 +63,7 @@ describe('call tracking from team phones', () => {
     const signIn = await env.app.inject({ method: 'POST', url: '/device-api/login', payload: { email: 'ram@shop.example', password: ram.password, device: 'Samsung Galaxy A15' } });
     expect(signIn.statusCode).toBe(200);
     const session = signIn.json();
-    expect(session).toMatchObject({ business: 'Test Shop', user: { name: 'Ramgopal' }, latestVersion: '1.0.3' });
+    expect(session).toMatchObject({ business: 'Test Shop', user: { name: 'Ramgopal' }, latestVersion: '1.0.4' });
     expect(session.token).toMatch(new RegExp(`^${env.tenantId}\\.[A-Za-z0-9]{40}$`));
     const app = phone(session.token);
     expect((await app('GET', '/status')).body).toMatchObject({ ok: true, business: 'Test Shop' });
@@ -193,6 +193,26 @@ describe('call tracking from team phones', () => {
     const ownAccess = await admin('PATCH', `/api/account/users/${ownerId}`, { callApp: false });
     expect(ownAccess.status).toBe(400);
     expect(ownAccess.body.error).toMatch(/admin account/);
+  });
+
+  it("shows what the phone found when looking for a recording, and never leaves a call waiting on a phone that can't send one", async () => {
+    const admin = as(await login(env.owner.email, env.owner.password));
+    const one = (await admin('POST', '/api/account/users', { email: 'one@shop.example', role: 'caller' })).body;
+    await env.api('POST', '/api/contacts', { phone: '+91 60034 16630', name: 'Pratik dey' });
+    const app = phone((await env.app.inject({ method: 'POST', url: '/device-api/login', payload: { email: 'one@shop.example', password: one.password } })).json().token);
+    const call = (minutes: number) => ({ number: '6003416630', type: 2, startedAt: minutesAgo(minutes), duration: 226 });
+
+    // Allowed: the call waits for its recording, and the phone's report on it reaches the admin.
+    const res = await app('POST', '/calls', { device: { recordings: 'allowed' }, calls: [call(20)] });
+    expect(res.body.recordingsWanted).toHaveLength(1);
+    expect((await admin('GET', '/api/calls')).body.items[0].recording).toBe('pending');
+    const check = 'Call at 17 Nov 5:27 PM: found its recording in Record/Call/ but couldn\'t open it (FileNotFoundException).';
+    await app('POST', '/calls', { device: { recordingCheck: check }, calls: [] });
+    expect((await admin('GET', '/api/call-devices')).body.items[0].recordingCheck).toMatchObject({ text: check });
+
+    // The phone stops allowing recordings: nothing waits for one any more, now or for new calls.
+    await app('POST', '/calls', { device: { recordings: 'denied' }, calls: [call(5)] });
+    expect((await admin('GET', '/api/calls')).body.items.map((c: any) => c.recording)).toEqual(['none', 'none']);
   });
 
   it("tells the admin when a phone stops sending, loses call access, or the app closed unexpectedly", async () => {

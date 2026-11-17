@@ -176,6 +176,11 @@ function CallAppTeam({
                           Recordings found in {d.dialerRecordings.folder || 'the phone'} · newest {relativeTime(d.dialerRecordings.at)}
                         </span>
                       )}
+                      {d.recordingCheck && (
+                        <span className="small muted">
+                          Last recording check ({relativeTime(d.recordingCheck.at)}): {d.recordingCheck.text}
+                        </span>
+                      )}
                       {d.background === 'restricted' && (
                         <span className="small muted">
                           Android may pause the app in the background, so calls can arrive late. In the app, tap Allow next to "Runs in the background".

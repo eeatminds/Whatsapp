@@ -84,6 +84,15 @@ final class Prefs {
         p.edit().putString("recordingsFolder", folder).putLong("lastRecordingAt", at).putLong("recordingsCheckedAt", System.currentTimeMillis()).apply();
     }
 
+    /** What happened when the newest call's recording was looked for, in words. */
+    String recordingReport() {
+        return p.getString("recordingReport", "");
+    }
+
+    void recordingReport(String report) {
+        p.edit().putString("recordingReport", report.length() > 300 ? report.substring(0, 300) : report).apply();
+    }
+
     /** Why the app last closed unexpectedly (empty if it never did), and when. */
     String problem() {
         return p.getString("problem", "");

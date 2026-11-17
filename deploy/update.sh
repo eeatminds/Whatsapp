@@ -21,4 +21,5 @@ compose=(docker compose -f docker-compose.yml)
 [ -f docker-compose.prod.yml ] && grep -q '^DOMAIN=' .env 2>/dev/null && compose+=(-f docker-compose.prod.yml)
 "${compose[@]}" up -d --build
 docker image prune -f >/dev/null
-echo "$(date -u +%FT%TZ) done"
+app_version="$(sed -n "s/.*CALL_APP_VERSION = '\([^']*\)'.*/\1/p" server/services/calls.ts)"
+echo "$(date -u +%FT%TZ) done. Calls → Download WA Reach Calls now gives out version ${app_version:-unknown}."
