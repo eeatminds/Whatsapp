@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import type { Platform, TenantRuntime, UserRow } from '../platform/platform.js';
+import { toPublicUser, type Platform, type TenantRuntime, type UserRow } from '../platform/platform.js';
 import { CALL_APP_VERSION, type DeviceRow } from '../services/calls.js';
 
 /**
@@ -51,7 +51,7 @@ export async function registerDeviceRoutes(
     const device = runtime.services.calls.device(secret);
     if (!device) return null;
     const user = platform.user(device.user_id);
-    if (!user || user.disabled || user.tenant_id !== tenantId || user.session_version !== device.session_version) {
+    if (!user || user.disabled || user.tenant_id !== tenantId || user.session_version !== device.session_version || !toPublicUser(user).callApp) {
       runtime.services.calls.revoke(device.id);
       return null;
     }
@@ -85,6 +85,9 @@ export async function registerDeviceRoutes(
     options.emailLimiter.reset(emailKey);
     if (user.role === 'platform_admin' || !user.tenant_id) {
       return reply.status(403).send({ error: 'Sign in with your business login, the one your WA Reach admin gave you.' });
+    }
+    if (!toPublicUser(user).callApp) {
+      return reply.status(403).send({ error: "Your WA Reach admin hasn't added you to the call app. Ask them to add you on the Calls page." });
     }
     platform.assertWritable(user.tenant_id);
     const runtime = platform.runtime(user.tenant_id);

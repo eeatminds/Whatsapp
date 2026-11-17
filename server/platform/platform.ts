@@ -44,6 +44,8 @@ export interface UserRow {
   lead_scope: LeadScope;
   /** With lead_scope 'tag': the tenant tag id whose leads this caller sees. */
   lead_tag: number | null;
+  /** 1 when this person may sign in on the WA Reach Calls phone app. */
+  call_app: number;
 }
 
 export interface TenantRow {
@@ -92,6 +94,8 @@ export interface PublicUser {
   leadScope: LeadScope;
   /** With leadScope 'tag': the tag id whose leads this caller sees. */
   leadTag: number | null;
+  /** May sign in on the WA Reach Calls phone app (the admin always may). */
+  callApp: boolean;
 }
 
 export const platformSettingsSchema = z.object({
@@ -194,6 +198,8 @@ export const teamMemberUpdateSchema = z.object({
   role: z.enum(['member', 'caller']).optional(),
   leadScope: z.enum(['assigned', 'all', 'tag']).optional(),
   leadTag: z.coerce.number().int().positive().nullish(),
+  /** Add them to (true) or remove them from (false) the WA Reach Calls phone app. */
+  callApp: z.boolean().optional(),
 });
 
 const DAY = 86_400_000;
@@ -230,6 +236,7 @@ export function toPublicUser(row: UserRow): PublicUser {
     createdAt: row.created_at,
     leadScope: row.lead_scope ?? 'assigned',
     leadTag: row.lead_tag ?? null,
+    callApp: row.role === 'owner' || row.call_app !== 0,
   };
 }
 
@@ -373,16 +380,18 @@ export class Platform {
     const user = this.user(userId);
     if (!user || user.tenant_id !== tenant) throw notFound('User');
     if (user.role === 'owner' && data.role) throw badRequest("The admin's role can't be changed");
+    if (user.role === 'owner' && data.callApp === false) throw badRequest('The admin can always use the call app');
     const scope = data.leadScope ?? user.lead_scope;
     // Keep a tag only while the scope is 'tag'; take the new tag if given, else the one already set.
     const tag = scope === 'tag' ? (data.leadTag !== undefined ? data.leadTag : user.lead_tag) : null;
     if (scope === 'tag' && !tag) throw badRequest('Choose a tag for this caller');
     this.db.run(
-      'UPDATE users SET name = ?, role = ?, lead_scope = ?, lead_tag = ? WHERE id = ?',
+      'UPDATE users SET name = ?, role = ?, lead_scope = ?, lead_tag = ?, call_app = ? WHERE id = ?',
       data.name !== undefined ? data.name || null : user.name,
       data.role ?? user.role,
       scope,
       tag,
+      data.callApp !== undefined ? Number(data.callApp) : user.call_app,
       userId,
     );
     return toPublicUser(this.user(userId)!);

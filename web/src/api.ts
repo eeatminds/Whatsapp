@@ -572,6 +572,8 @@ export interface PlatformUser {
   leadScope: 'assigned' | 'all' | 'tag';
   /** With leadScope 'tag': the tag id whose leads this caller sees. */
   leadTag: number | null;
+  /** May sign in on the WA Reach Calls phone app (the admin always may). */
+  callApp: boolean;
 }
 
 /** Someone who can sign in to the business, and so can be given leads. */
@@ -580,6 +582,8 @@ export interface TeamMember {
   name: string | null;
   email: string;
   role: 'owner' | 'member' | 'caller';
+  /** May sign in on the WA Reach Calls phone app. */
+  callApp: boolean;
 }
 
 export const ROLE_LABEL: Record<UserRole, string> = { platform_admin: 'Platform admin', owner: 'Admin', member: 'Team member', caller: 'Caller' };
@@ -675,9 +679,18 @@ export interface CallDevice {
   name: string;
   appVersion: string | null;
   recordings: 'allowed' | 'denied' | null;
+  callHistory: 'allowed' | 'denied' | null;
+  /** 'restricted': Android may stop the app in the background, so calls can arrive late. */
+  background: 'allowed' | 'restricted' | null;
   connectedAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;
+  /** working: sending. quiet: nothing for 2+ hours. stopped: nothing for a day. no_call_access: call history access off. */
+  health: 'working' | 'quiet' | 'stopped' | 'no_call_access';
+  /** Why the app last closed unexpectedly, as the phone reported it. */
+  problem: { message: string; at: string } | null;
+  /** Newest call recording the phone's dialer saved (folder, when); 'none' when recording looks off; null before the phone says. */
+  dialerRecordings: { folder: string; at: string } | 'none' | null;
 }
 
 export interface LeadCalls {

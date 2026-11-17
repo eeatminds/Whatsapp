@@ -17,8 +17,8 @@ android {
         minSdk 26
         targetSdk 35
         // Keep in step with CALL_APP_VERSION in server/services/calls.ts.
-        versionCode 1
-        versionName '1.0.0'
+        versionCode 4
+        versionName '1.0.3'
         // The WA Reach address shown on the sign-in screen (it can be changed there).
         buildConfigField 'String', 'DEFAULT_SERVER', "\"${System.getenv('WA_REACH_SERVER') ?: 'https://wa.eeatminds.in'}\""
     }
@@ -49,4 +49,17 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    // The tests run the real screen and background code on simulated Android versions (Robolectric).
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+        }
+    }
+}
+
+dependencies {
+    // Tests only: nothing is added to the app itself.
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
 }

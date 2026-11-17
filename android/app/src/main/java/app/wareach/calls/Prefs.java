@@ -67,9 +67,55 @@ final class Prefs {
         return p.getString("keptDay", "").equals(Time.today()) ? p.getInt("keptToday", 0) : 0;
     }
 
+    /** The folder of the newest call recording found on the phone ("" for none), when it was made, and when this was checked. */
+    String recordingsFolder() {
+        return p.getString("recordingsFolder", "");
+    }
+
+    long lastRecordingAt() {
+        return p.getLong("lastRecordingAt", 0);
+    }
+
+    long recordingsCheckedAt() {
+        return p.getLong("recordingsCheckedAt", 0);
+    }
+
+    void recordingsChecked(String folder, long at) {
+        p.edit().putString("recordingsFolder", folder).putLong("lastRecordingAt", at).putLong("recordingsCheckedAt", System.currentTimeMillis()).apply();
+    }
+
+    /** Why the app last closed unexpectedly (empty if it never did), and when. */
+    String problem() {
+        return p.getString("problem", "");
+    }
+
+    long problemAt() {
+        return p.getLong("problemAt", 0);
+    }
+
+    /** True once WA Reach has been told about the current problem. */
+    boolean problemReported() {
+        return p.getBoolean("problemReported", false);
+    }
+
+    /** Called as the app closes unexpectedly: written at once, since the app is about to stop. */
+    void crashed(String reason) {
+        p.edit().putString("problem", reason).putLong("problemAt", System.currentTimeMillis()).putBoolean("problemReported", false).commit();
+    }
+
+    void reported(String reason) {
+        if (reason.equals(problem())) p.edit().putBoolean("problemReported", true).apply();
+    }
+
     void signIn(String server, String token, String business, String user, long since) {
+        String problem = problem();
+        long problemAt = problemAt();
+        boolean reported = problemReported();
         p.edit()
                 .clear()
+                .putString("problem", problem)
+                .putLong("problemAt", problemAt)
+                .putBoolean("problemReported", reported)
                 .putString("server", server)
                 .putString("token", token)
                 .putString("business", business)
@@ -80,7 +126,16 @@ final class Prefs {
 
     void signOut() {
         String server = server();
-        p.edit().clear().putString("server", server).apply();
+        String problem = problem();
+        long problemAt = problemAt();
+        boolean reported = problemReported();
+        p.edit()
+                .clear()
+                .putString("server", server)
+                .putString("problem", problem)
+                .putLong("problemAt", problemAt)
+                .putBoolean("problemReported", reported)
+                .apply();
     }
 
     void setAbout(String business, String user, String latestVersion, String appUrl) {

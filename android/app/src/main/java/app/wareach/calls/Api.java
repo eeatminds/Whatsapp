@@ -56,9 +56,15 @@ final class Api {
         c.setFixedLengthStreamingMode(length);
         c.setReadTimeout(120_000);
         try (OutputStream out = c.getOutputStream()) {
+            // Exactly `length` bytes, even if the file grows while it is sent.
             byte[] buffer = new byte[64 * 1024];
+            long left = length;
             int n;
-            while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+            while (left > 0 && (n = in.read(buffer, 0, (int) Math.min(buffer.length, left))) != -1) {
+                out.write(buffer, 0, n);
+                left -= n;
+            }
+            if (left > 0) throw new IOException("The recording got shorter while it was sent");
         }
         return read(c);
     }

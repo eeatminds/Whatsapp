@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Core } from '../context.js';
 import type { Services } from '../services/index.js';
-import { badRequest, notFound } from '../lib/errors.js';
+import { HttpError, badRequest, notFound } from '../lib/errors.js';
 import { callerScope } from '../lib/permissions.js';
 import { chatIdFor } from '../lib/phone.js';
 import { contactFilterSchema } from '../services/contacts.js';
@@ -49,6 +49,8 @@ export interface TeamMember {
   name: string | null;
   email: string;
   role: 'owner' | 'member' | 'caller';
+  /** May sign in on the WA Reach Calls phone app. */
+  callApp: boolean;
 }
 
 export interface PlatformInfo {
@@ -63,6 +65,11 @@ export interface PlatformInfo {
 
 export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Services, platform?: PlatformInfo): Promise<void> {
   const team = (): TeamMember[] => platform?.team() ?? [];
+  /** The business's admin, the platform admin inside the business, or the business's API key. */
+  const requireAdmin = (request: FastifyRequest) => {
+    const role = request.auth?.user?.role;
+    if (role !== 'owner' && role !== 'platform_admin' && request.auth?.via !== 'api_key') throw new HttpError(403, 'Only the business admin can do this');
+  };
   /** Leads can only be given to someone who can sign in to this business. */
   const checkTeamMember = (userId: number) => {
     if (!team().some(m => m.id === userId)) throw badRequest('That person is not in your team (Account & billing → Team)');
@@ -508,8 +515,9 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
     return { ...(platform?.callApp() ?? { url: null, version: CALL_APP_VERSION }), myPhones: me ? s.calls.devices().filter(d => d.userId === me).length : 0 };
   });
   app.get('/call-devices', async () => ({ items: s.calls.devices() }));
-  /** Sign a phone out: it stops sending calls until someone signs in on it again. */
+  /** Sign a phone out: it stops sending calls until someone signs in on it again. The admin's call. */
   app.delete('/call-devices/:id', async request => {
+    requireAdmin(request);
     s.calls.revoke(params(idParam, request).id);
     return { ok: true };
   });

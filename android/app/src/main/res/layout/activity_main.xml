@@ -27,6 +27,17 @@
             android:layout_marginTop="4dp"
             android:text="@string/tagline" />
 
+        <!-- Why the app closed unexpectedly last time (also sent to WA Reach for the admin). -->
+        <TextView
+            android:id="@+id/problem"
+            style="@style/Card"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/danger"
+            android:textIsSelectable="true"
+            android:textSize="13sp"
+            android:visibility="gone" />
+
         <!-- Sign in -->
         <LinearLayout
             android:id="@+id/signin"
@@ -161,6 +172,15 @@
                         android:text="@string/allow" />
                 </LinearLayout>
 
+                <!-- Whether the phone's dialer is saving call recordings at all. -->
+                <TextView
+                    android:id="@+id/recordings_found"
+                    style="@style/Muted"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="6dp"
+                    android:visibility="gone" />
+
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -239,5 +259,13 @@
                 android:text="@string/sign_out"
                 android:textColor="@color/danger" />
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/version"
+            style="@style/Muted"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center" />
     </LinearLayout>
 </ScrollView>

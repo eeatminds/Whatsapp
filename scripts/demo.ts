@@ -401,6 +401,13 @@ async function main(): Promise<void> {
     }
   }
   for (const device of phones) s.calls.touch(device);
+  // One phone needs Allow for the background; another went quiet three days ago (app removed?).
+  s.calls.receive(phones[0], { device: { recordings: 'allowed', recordingsFolder: 'Record/Call/', lastRecordingAt: Date.now() - 40 * 60_000 }, calls: [] });
+  s.calls.receive(phones[1], { device: { appVersion: '1.0.3', callHistory: 'allowed', background: 'restricted', recordings: 'allowed', recordingsFolder: '', lastRecordingAt: 0 }, calls: [] });
+  runtime.core.db.run('UPDATE call_devices SET last_seen_at = ? WHERE id = ?', new Date(Date.now() - 3 * 86_400_000).toISOString(), phones[2].id);
+  // A team member the admin took out of the call app.
+  const farah = platform.addUser(chai.tenant.id, { email: 'farah@chaico.demo', name: 'Farah', role: 'caller', password: DEMO_PASSWORD }).user;
+  platform.updateTeamMember(chai.tenant.id, farah.id, { callApp: false });
   // Someone new writes in: Inbox only until the business adds them.
   offset = -20 * 60_000;
   await s.inbound.handle({

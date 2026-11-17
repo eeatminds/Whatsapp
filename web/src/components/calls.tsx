@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import type { CallApp, CallDirection, LeadCalls, TeamMember } from '../api';
+import type { CallApp, CallDevice, CallDirection, LeadCalls, TeamMember } from '../api';
 import { Card } from './ui';
 import { IconDownload } from './icons';
 import { formatCallLength, formatTime, relativeTime } from '../format';
@@ -55,11 +55,69 @@ function relativeDay(iso: string): string {
   return date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 }
 
-/** "Seen 5 min ago", or a warning when a phone has gone quiet (it sends every 15 minutes). */
-export function PhoneSeen({ at }: { at: string | null }) {
-  if (!at) return <span className="small muted">Not sent yet</span>;
-  const quiet = Date.now() - new Date(at).getTime() > 60 * 60_000;
-  return <span className={`small ${quiet ? 'error-text' : 'secondary'}`}>{quiet ? `⚠️ Last sent ${relativeTime(at)}` : `Sent ${relativeTime(at)}`}</span>;
+/**
+ * How a phone is doing, worded for the admin. A working phone checks in every 15 minutes, so a
+ * phone that goes quiet for a day has stopped: the app was removed, signed out, or the phone is off.
+ */
+export function PhoneStatus({ device, short }: { device: CallDevice; short?: boolean }) {
+  const seen = relativeTime(device.lastSeenAt ?? device.connectedAt);
+  switch (device.health) {
+    case 'working':
+      return <span className="small success-text">✅ Working · sent {seen}</span>;
+    case 'quiet':
+      return (
+        <span className="small warn-text">
+          ⚠️ Nothing for {seen.replace(' ago', '')}
+          {short ? '' : '. The phone may be off or offline.'}
+        </span>
+      );
+    case 'no_call_access':
+      return (
+        <span className="small error-text">
+          ⛔ Call history access is off
+          {short ? '' : '. Ask them to open WA Reach Calls and tap Allow.'}
+        </span>
+      );
+    case 'stopped':
+      return (
+        <span className="small error-text">
+          ⛔ Stopped: last sent {seen}
+          {short ? '' : '. The app may have been removed or signed out, or the phone is off. Ask them to open WA Reach Calls.'}
+        </span>
+      );
+  }
+}
+
+/** The phones (and people) that need the admin's attention, for the warning at the top of the Calls page. */
+export function phoneProblems(team: TeamMember[], devices: CallDevice[]): Array<{ key: string; text: string }> {
+  const out: Array<{ key: string; text: string }> = [];
+  for (const m of team) {
+    if (!m.callApp) continue;
+    const phones = devices.filter(d => d.userId === m.id);
+    if (!phones.length) {
+      // Only callers are expected to have the app; the admin and team members may not use it.
+      if (m.role === 'caller')
+        out.push({
+          key: `none-${m.id}`,
+          text: `${memberName(m)}: no phone connected`,
+        });
+      continue;
+    }
+    for (const d of phones) {
+      const seen = relativeTime(d.lastSeenAt ?? d.connectedAt);
+      if (d.health === 'stopped')
+        out.push({
+          key: `d-${d.id}`,
+          text: `${memberName(m)}: ${d.name} stopped sending (last sent ${seen})`,
+        });
+      if (d.health === 'no_call_access')
+        out.push({
+          key: `d-${d.id}`,
+          text: `${memberName(m)}: call history access is off on ${d.name}`,
+        });
+    }
+  }
+  return out;
 }
 
 /** Download link, a QR code to scan with the phone, and the steps to set it up. */
@@ -69,7 +127,11 @@ export function GetTheApp({ app }: { app: CallApp }) {
   useEffect(() => {
     if (!url) return;
     let live = true;
-    void QRCode.toDataURL(url, { margin: 1, width: 180, errorCorrectionLevel: 'M' }).then(data => live && setQr(data));
+    void QRCode.toDataURL(url, {
+      margin: 1,
+      width: 180,
+      errorCorrectionLevel: 'M',
+    }).then(data => live && setQr(data));
     return () => {
       live = false;
     };
@@ -94,8 +156,8 @@ export function GetTheApp({ app }: { app: CallApp }) {
               </a>
             </div>
             <p className="hint" style={{ margin: 0 }}>
-              Only calls with your leads are kept; every other call on the phone is ignored. Recordings come from the phone's own dialer, so turn on call recording in
-              the Phone app's settings if the phone has it. iPhones can't share their call history, so this works on Android only.
+              Only calls with your leads are kept; every other call on the phone is ignored. Recordings come from the phone's own dialer, so turn on call
+              recording in the Phone app's settings if the phone has it. iPhones can't share their call history, so this works on Android only.
             </p>
           </div>
         </div>
