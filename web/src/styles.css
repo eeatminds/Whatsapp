@@ -1665,6 +1665,9 @@ table.table {
 .success-text {
   color: var(--brand-text);
 }
+.warn-text {
+  color: var(--warn-text);
+}
 
 /* ---------------------------------------------------------------- lead sources */
 

@@ -20,7 +20,7 @@ import type { ContactsService } from './contacts.js';
  */
 
 /** The app version the server expects; older apps are told an update is available. */
-export const CALL_APP_VERSION = '1.0.1';
+export const CALL_APP_VERSION = '1.0.2';
 
 export type CallDirection = 'outgoing' | 'incoming' | 'missed' | 'rejected';
 /** Android's CallLog.Calls.TYPE values. */
@@ -31,6 +31,19 @@ const DAY = 86_400_000;
 const REMARK_GRACE_MS = 30 * 60_000;
 /** The app keeps looking for a recording this long after a call, then gives up. */
 const RECORDING_WAIT_MS = 2 * DAY;
+/**
+ * A working phone sends every 15 minutes (Android may wait longer while the phone sleeps). Quiet
+ * for this long: worth a look. Quiet for a day: it has stopped (the app was removed, its access
+ * turned off, or the phone is off).
+ */
+const QUIET_AFTER_MS = 2 * 3_600_000;
+const STOPPED_AFTER_MS = DAY;
+
+/**
+ * working: sending as it should. quiet: not heard from for a couple of hours. stopped: not heard
+ * from for a day. no_call_access: the app is running but call history access was turned off.
+ */
+export type PhoneHealth = 'working' | 'quiet' | 'stopped' | 'no_call_access';
 
 export interface DeviceRow {
   id: number;
@@ -44,6 +57,10 @@ export interface DeviceRow {
   created_at: string;
   last_seen_at: string | null;
   revoked_at: string | null;
+  call_log: 'allowed' | 'denied' | null;
+  background: 'allowed' | 'restricted' | null;
+  problem: string | null;
+  problem_at: string | null;
 }
 
 interface CallRow {
@@ -83,9 +100,15 @@ export interface CallDevice {
   name: string;
   appVersion: string | null;
   recordings: 'allowed' | 'denied' | null;
+  callHistory: 'allowed' | 'denied' | null;
+  /** 'restricted': Android may stop the app in the background, so calls can arrive late. */
+  background: 'allowed' | 'restricted' | null;
   connectedAt: string;
   lastSeenAt: string | null;
   revokedAt: string | null;
+  health: PhoneHealth;
+  /** Why the app last closed unexpectedly, as the phone reported it. */
+  problem: { message: string; at: string } | null;
 }
 
 /** What a lead's calls look like on the Leads page. */
@@ -104,6 +127,10 @@ const uploadSchema = z.object({
       name: z.string().trim().min(1).max(80).optional(),
       appVersion: z.string().trim().max(20).optional(),
       recordings: z.enum(['allowed', 'denied']).optional(),
+      callHistory: z.enum(['allowed', 'denied']).optional(),
+      background: z.enum(['allowed', 'restricted']).optional(),
+      /** Why the app last closed unexpectedly (sent once, then cleared on the phone). */
+      problem: z.string().trim().min(1).max(2000).optional(),
     })
     .default({}),
   calls: z
@@ -146,6 +173,13 @@ export function sniffAudio(data: Buffer): { ext: string; mime: string } | null {
 
 const hashSecret = (secret: string) => createHash('sha256').update(secret).digest('hex');
 const iso = (ms: number) => new Date(ms).toISOString();
+
+function health(device: DeviceRow, now: number): PhoneHealth {
+  const quietFor = now - Date.parse(device.last_seen_at ?? device.created_at);
+  if (quietFor >= STOPPED_AFTER_MS) return 'stopped';
+  if (device.call_log === 'denied') return 'no_call_access';
+  return quietFor >= QUIET_AFTER_MS ? 'quiet' : 'working';
+}
 
 export class CallsService {
   constructor(
@@ -206,6 +240,7 @@ export class CallsService {
   }
 
   devices(): CallDevice[] {
+    const now = this.now().getTime();
     return this.core.db
       .all<DeviceRow>('SELECT * FROM call_devices WHERE revoked_at IS NULL ORDER BY last_seen_at DESC, id DESC')
       .map(d => ({
@@ -214,9 +249,13 @@ export class CallsService {
         name: d.name,
         appVersion: d.app_version,
         recordings: d.recordings,
+        callHistory: d.call_log,
+        background: d.background,
         connectedAt: d.created_at,
         lastSeenAt: d.last_seen_at,
         revokedAt: d.revoked_at,
+        health: health(d, now),
+        problem: d.problem && d.problem_at ? { message: d.problem, at: d.problem_at } : null,
       }));
   }
 
@@ -235,11 +274,19 @@ export class CallsService {
     const data = uploadSchema.parse(input);
     const now = this.now();
     this.core.db.run(
-      'UPDATE call_devices SET last_seen_at = ?, name = COALESCE(?, name), app_version = COALESCE(?, app_version), recordings = COALESCE(?, recordings) WHERE id = ?',
+      `UPDATE call_devices SET last_seen_at = ?, name = COALESCE(?, name), app_version = COALESCE(?, app_version), recordings = COALESCE(?, recordings),
+         call_log = COALESCE(?, call_log), background = COALESCE(?, background),
+         problem = COALESCE(?, problem), problem_at = CASE WHEN ? IS NULL THEN problem_at ELSE ? END
+       WHERE id = ?`,
       nowIso(now),
       data.device.name ?? null,
       data.device.appVersion ?? null,
       data.device.recordings ?? null,
+      data.device.callHistory ?? null,
+      data.device.background ?? null,
+      data.device.problem ?? null,
+      data.device.problem ?? null,
+      nowIso(now),
       device.id,
     );
     const since = Date.parse(device.since);

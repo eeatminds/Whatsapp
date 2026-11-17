@@ -5,6 +5,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.res.AssetFileDescriptor;
 import android.os.Build;
+import android.os.PowerManager;
 import java.io.InputStream;
 import java.util.List;
 import java.util.Locale;
@@ -34,6 +35,12 @@ final class Sync {
         return c.checkSelfPermission(audioPermission()) == PackageManager.PERMISSION_GRANTED;
     }
 
+    /** False when Android may stop the app in the background (battery saving), so calls arrive late. */
+    static boolean runsInBackground(Context c) {
+        PowerManager pm = c.getSystemService(PowerManager.class);
+        return pm != null && pm.isIgnoringBatteryOptimizations(c.getPackageName());
+    }
+
     static String deviceName() {
         String maker = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER;
         String model = Build.MODEL == null ? "Phone" : Build.MODEL;
@@ -46,19 +53,28 @@ final class Sync {
     static synchronized boolean run(Context context) {
         Prefs prefs = new Prefs(context);
         if (!prefs.signedIn()) return true;
-        if (!canReadCalls(context)) {
-            prefs.failed(context.getString(R.string.error_no_call_permission));
-            return true;
-        }
         try {
-            // If the call log was cleared, its row numbers start again.
-            long lastId = prefs.lastCallId();
-            if (lastId > CallLogReader.newestId(context)) lastId = 0;
+            boolean callHistory = canReadCalls(context);
             boolean recordings = canReadRecordings(context);
+            // How this phone is set up, so the admin can see a phone that can't send (shown on the Calls page).
             JSONObject device = new JSONObject()
                     .put("name", deviceName())
                     .put("appVersion", BuildConfig.VERSION_NAME)
-                    .put("recordings", recordings ? "allowed" : "denied");
+                    .put("recordings", recordings ? "allowed" : "denied")
+                    .put("callHistory", callHistory ? "allowed" : "denied")
+                    .put("background", runsInBackground(context) ? "allowed" : "restricted");
+            String problem = prefs.problem();
+            if (!problem.isEmpty() && !prefs.problemReported()) device.put("problem", problem);
+            if (!callHistory) {
+                // Still check in, so WA Reach can tell the admin that call history access is off.
+                Api.json("POST", prefs.server(), "/calls", prefs.token(), new JSONObject().put("device", device).put("calls", new JSONArray()));
+                prefs.reported(problem);
+                prefs.failed(context.getString(R.string.error_no_call_permission));
+                return true;
+            }
+            // If the call log was cleared, its row numbers start again.
+            long lastId = prefs.lastCallId();
+            if (lastId > CallLogReader.newestId(context)) lastId = 0;
             int kept = 0;
             JSONArray wanted = new JSONArray();
             while (true) {
@@ -68,6 +84,8 @@ final class Sync {
                     calls.put(new JSONObject().put("number", e.number).put("type", e.type).put("startedAt", e.startedAt).put("duration", e.duration));
                 }
                 JSONObject res = Api.json("POST", prefs.server(), "/calls", prefs.token(), new JSONObject().put("device", device).put("calls", calls));
+                prefs.reported(problem);
+                device.remove("problem");
                 kept += res.optInt("stored", 0);
                 wanted = res.optJSONArray("recordingsWanted") == null ? new JSONArray() : res.optJSONArray("recordingsWanted");
                 if (!entries.isEmpty()) lastId = entries.get(entries.size() - 1).id;

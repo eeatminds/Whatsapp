@@ -217,7 +217,10 @@ export async function registerAccountRoutes(app: FastifyInstance, platform: Plat
     requireOwner(request);
     const target = teamMember(request);
     checkTag(request, (request.body as { leadTag?: unknown } | null)?.leadTag);
-    return platform.updateTeamMember(tenantOf(request), target.id, request.body);
+    const updated = platform.updateTeamMember(tenantOf(request), target.id, request.body);
+    // Removed from the call app: their phones stop sending at once (their calls stay on record).
+    if (!updated.callApp) platform.runtime(tenantOf(request)).services.calls.revokeUser(target.id);
+    return updated;
   });
 
   /** Only the admin sets team members' passwords: typed in, or made up when left empty. Signs them out. */

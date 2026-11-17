@@ -7,9 +7,9 @@ export const memberName = (m: Pick<TeamMember, 'name' | 'email'>): string => m.n
 
 /** People who can be given leads: callers first, then the rest of the team. */
 export function useTeam(enabled = true) {
-  const { data } = useApi<{ items: TeamMember[] }>(enabled ? '/api/team' : null);
+  const { data, reload } = useApi<{ items: TeamMember[] }>(enabled ? '/api/team' : null);
   const items = [...(data?.items ?? [])].sort((a, b) => Number(b.role === 'caller') - Number(a.role === 'caller') || memberName(a).localeCompare(memberName(b)));
-  return { team: items, loaded: !!data, byId: new Map(items.map(m => [m.id, m])) };
+  return { team: items, loaded: !!data, byId: new Map(items.map(m => [m.id, m])), reload };
 }
 
 /** "Ramgopal (Caller)". */

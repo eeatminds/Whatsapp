@@ -42,7 +42,8 @@ jobs:
           else
             echo "::notice::No signing key in the repository secrets: building an unsigned APK to check the code."
           fi
-          ./gradlew assembleRelease lintRelease --no-daemon
+          # The tests run the app's screen and sync on simulated Android 8, 10, 13, 14 and 15.
+          ./gradlew assembleRelease lintRelease testDebugUnitTest --no-daemon
           rm -f "$RUNNER_TEMP/wa-reach-calls.jks"
 
       - uses: actions/upload-artifact@v4

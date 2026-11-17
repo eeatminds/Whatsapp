@@ -482,4 +482,13 @@ export const MIGRATIONS: string[] = [
     next_index INTEGER NOT NULL DEFAULT 0
   );
   `,
+  // 18: what each phone last said about itself, so the admin can tell a working phone from one that
+  // stopped: call history access, whether Android may stop the app in the background, and the
+  // reason the app last closed unexpectedly.
+  `
+  ALTER TABLE call_devices ADD COLUMN call_log TEXT;
+  ALTER TABLE call_devices ADD COLUMN background TEXT;
+  ALTER TABLE call_devices ADD COLUMN problem TEXT;
+  ALTER TABLE call_devices ADD COLUMN problem_at TEXT;
+  `,
 ];

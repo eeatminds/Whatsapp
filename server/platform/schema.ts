@@ -107,4 +107,9 @@ export const PLATFORM_MIGRATIONS: string[] = [
     WHERE id IN (SELECT id FROM keep_recorded_by);
   DROP TABLE keep_recorded_by;
   `,
+  // Whether a team member may sign in on the WA Reach Calls phone app. The business's admin adds
+  // and removes people; everyone starts allowed, as before this column existed.
+  `
+  ALTER TABLE users ADD COLUMN call_app INTEGER NOT NULL DEFAULT 1;
+  `,
 ];

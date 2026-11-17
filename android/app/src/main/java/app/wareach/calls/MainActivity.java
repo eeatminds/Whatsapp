@@ -11,7 +11,6 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.PowerManager;
 import android.provider.Settings;
 import android.view.View;
 import android.view.WindowInsets;
@@ -27,15 +26,19 @@ public class MainActivity extends Activity {
     private static final int ASK_CALLS = 1;
     private static final int ASK_AUDIO = 2;
 
-    private final ExecutorService io = Executors.newSingleThreadExecutor();
+    /**
+     * Network work runs here, one task at a time. Shared by every copy of this screen and never shut
+     * down: Android recreates the screen (rotation, dark mode, low memory) while a request is out.
+     */
+    private static final ExecutorService IO = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final SharedPreferences.OnSharedPreferenceChangeListener onChange = (sp, key) -> main.post(this::render);
+    private final SharedPreferences.OnSharedPreferenceChangeListener onChange = (sp, key) -> onScreen(this::render);
     private Prefs prefs;
     private boolean busy;
 
     private View signin, status;
     private EditText server, email, password;
-    private TextView signinError, connectedAs, permCalls, permRecordings, permBackground, lastSent, keptToday, syncError, update;
+    private TextView signinError, connectedAs, permCalls, permRecordings, permBackground, lastSent, keptToday, syncError, update, problem;
     private Button connect, allowCalls, allowRecordings, allowBackground, sendNow;
 
     @Override
@@ -73,6 +76,8 @@ public class MainActivity extends Activity {
         syncError = findViewById(R.id.sync_error);
         sendNow = findViewById(R.id.send_now);
         update = findViewById(R.id.update);
+        problem = findViewById(R.id.problem);
+        ((TextView) findViewById(R.id.version)).setText(getString(R.string.version, BuildConfig.VERSION_NAME));
 
         server.setText(prefs.server());
         connect.setOnClickListener(v -> signIn());
@@ -102,16 +107,19 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         render();
-        if (prefs.signedIn()) {
+        // If the app just closed unexpectedly, open quietly so it can't close again straight away.
+        boolean justClosed = System.currentTimeMillis() - prefs.problemAt() < 30_000;
+        if (prefs.signedIn() && !justClosed) {
             Scheduler.schedule(this);
             refreshAbout();
         }
     }
 
-    @Override
-    protected void onDestroy() {
-        io.shutdown();
-        super.onDestroy();
+    /** Runs on the main thread, unless this screen has been closed by then. */
+    private void onScreen(Runnable action) {
+        main.post(() -> {
+            if (!isDestroyed()) action.run();
+        });
     }
 
     // ---------------------------------------------------------------- sign in and out
@@ -128,7 +136,7 @@ public class MainActivity extends Activity {
         connect.setEnabled(false);
         connect.setText(R.string.connecting);
         signinError.setVisibility(View.GONE);
-        io.execute(() -> {
+        IO.execute(() -> {
             String error = null;
             try {
                 JSONObject body = new JSONObject().put("email", user).put("password", pass).put("device", Sync.deviceName());
@@ -143,7 +151,7 @@ public class MainActivity extends Activity {
                 error = getString(R.string.error_offline);
             }
             String failure = error;
-            main.post(() -> {
+            onScreen(() -> {
                 busy = false;
                 connect.setEnabled(true);
                 connect.setText(R.string.connect);
@@ -174,7 +182,7 @@ public class MainActivity extends Activity {
                     prefs.signOut();
                     Scheduler.cancel(this);
                     render();
-                    io.execute(() -> {
+                    IO.execute(() -> {
                         try {
                             Api.json("POST", address, "/logout", token, null);
                         } catch (Exception ignored) {
@@ -187,7 +195,7 @@ public class MainActivity extends Activity {
 
     /** Business name, the person, and whether a newer app version is out. */
     private void refreshAbout() {
-        io.execute(() -> {
+        IO.execute(() -> {
             try {
                 JSONObject res = Api.json("GET", prefs.server(), "/status", prefs.token(), null);
                 JSONObject who = res.getJSONObject("user");
@@ -232,11 +240,6 @@ public class MainActivity extends Activity {
         if (!Sync.canReadRecordings(this)) ask(Sync.audioPermission(), ASK_AUDIO);
     }
 
-    private boolean runsInBackground() {
-        PowerManager pm = getSystemService(PowerManager.class);
-        return pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
-    }
-
     private void allowBackground() {
         if (!open(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName())))) {
             open(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
@@ -260,13 +263,13 @@ public class MainActivity extends Activity {
         busy = true;
         sendNow.setEnabled(false);
         sendNow.setText(R.string.sending);
-        io.execute(() -> {
+        IO.execute(() -> {
             try {
                 Sync.run(getApplicationContext());
             } catch (RuntimeException ignored) {
                 // Sync records its own errors; a surprise here must not close the app.
             }
-            main.post(() -> {
+            onScreen(() -> {
                 busy = false;
                 sendNow.setEnabled(true);
                 sendNow.setText(R.string.send_now);
@@ -278,6 +281,15 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- screen
 
     private void render() {
+        // The last unexpected close, for three days, so it can be shown to whoever fixes the app.
+        String reason = prefs.problem();
+        boolean recent = !reason.isEmpty() && System.currentTimeMillis() - prefs.problemAt() < 3 * 86_400_000L;
+        problem.setVisibility(recent ? View.VISIBLE : View.GONE);
+        if (recent) {
+            String[] lines = reason.split("\n");
+            String shortReason = lines[0] + (lines.length > 1 ? "\n" + lines[1] : "");
+            problem.setText(getString(R.string.problem_last_time, Time.ago(prefs.problemAt()), shortReason));
+        }
         boolean in = prefs.signedIn();
         signin.setVisibility(in ? View.GONE : View.VISIBLE);
         status.setVisibility(in ? View.VISIBLE : View.GONE);
@@ -294,7 +306,7 @@ public class MainActivity extends Activity {
         boolean recordings = Sync.canReadRecordings(this);
         permRecordings.setText(recordings ? R.string.perm_recordings_ok : R.string.perm_recordings_needed);
         allowRecordings.setVisibility(recordings ? View.GONE : View.VISIBLE);
-        boolean background = runsInBackground();
+        boolean background = Sync.runsInBackground(this);
         permBackground.setText(background ? R.string.perm_background_ok : R.string.perm_background_needed);
         allowBackground.setVisibility(background ? View.GONE : View.VISIBLE);
 

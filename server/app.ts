@@ -477,7 +477,7 @@ export async function buildApp(platform: Platform, options: AppOptions = {}): Pr
           platform
             .users(current().tenantId)
             .filter(u => !u.disabled && u.role !== 'platform_admin')
-            .map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role as 'owner' | 'member' | 'caller' })),
+            .map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role as 'owner' | 'member' | 'caller', callApp: u.callApp })),
       });
     },
     { prefix: '/api' },

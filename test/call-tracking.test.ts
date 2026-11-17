@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync } from 'node:fs';
 import { createTestEnv, type TestEnv } from './helpers.js';
 import { sniffAudio } from '../server/services/calls.js';
+import { SettingsService } from '../server/services/settings.js';
 
 let env: TestEnv;
 beforeEach(async () => {
@@ -62,7 +63,7 @@ describe('call tracking from team phones', () => {
     const signIn = await env.app.inject({ method: 'POST', url: '/device-api/login', payload: { email: 'ram@shop.example', password: ram.password, device: 'Samsung Galaxy A15' } });
     expect(signIn.statusCode).toBe(200);
     const session = signIn.json();
-    expect(session).toMatchObject({ business: 'Test Shop', user: { name: 'Ramgopal' }, latestVersion: '1.0.1' });
+    expect(session).toMatchObject({ business: 'Test Shop', user: { name: 'Ramgopal' }, latestVersion: '1.0.2' });
     expect(session.token).toMatch(new RegExp(`^${env.tenantId}\\.[A-Za-z0-9]{40}$`));
     const app = phone(session.token);
     expect((await app('GET', '/status')).body).toMatchObject({ ok: true, business: 'Test Shop' });
@@ -160,6 +161,64 @@ describe('call tracking from team phones', () => {
     expect((await phone(`${env.tenantId}.${'x'.repeat(40)}`)('GET', '/status')).status).toBe(401);
   });
 
+  it('lets only the admin add people to the call app and remove them', async () => {
+    const admin = as(await login(env.owner.email, env.owner.password));
+    const one = (await admin('POST', '/api/account/users', { email: 'one@shop.example', name: 'One', role: 'caller' })).body;
+    const helper = (await admin('POST', '/api/account/users', { email: 'help@shop.example', role: 'member' })).body;
+    const signIn = (password: string) => env.app.inject({ method: 'POST', url: '/device-api/login', payload: { email: 'one@shop.example', password } });
+
+    // Everyone starts allowed, and the team list says so.
+    expect((await admin('GET', '/api/team')).body.items.find((m: any) => m.id === one.user.id)).toMatchObject({ callApp: true });
+    const app = phone((await signIn(one.password)).json().token);
+    expect((await app('GET', '/status')).status).toBe(200);
+
+    // A team member who isn't the admin can't remove people or sign phones out.
+    const member = as(await login('help@shop.example', helper.password));
+    expect((await member('PATCH', `/api/account/users/${one.user.id}`, { callApp: false })).status).toBe(403);
+    const deviceId = (await admin('GET', '/api/call-devices')).body.items[0].id;
+    expect((await member('DELETE', `/api/call-devices/${deviceId}`)).status).toBe(403);
+
+    // The admin removes them: the phone is signed out at once, and they can't sign in again.
+    expect((await admin('PATCH', `/api/account/users/${one.user.id}`, { callApp: false })).body).toMatchObject({ callApp: false });
+    expect((await app('GET', '/status')).status).toBe(401);
+    expect((await admin('GET', '/api/call-devices')).body.items).toEqual([]);
+    const refused = await signIn(one.password);
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json().error).toMatch(/hasn't added you to the call app/);
+
+    // Added back: they can sign in again. The admin's own access can't be taken away.
+    await admin('PATCH', `/api/account/users/${one.user.id}`, { callApp: true });
+    expect((await signIn(one.password)).statusCode).toBe(200);
+    const ownerId = (await admin('GET', '/api/team')).body.items.find((m: any) => m.role === 'owner').id;
+    const ownAccess = await admin('PATCH', `/api/account/users/${ownerId}`, { callApp: false });
+    expect(ownAccess.status).toBe(400);
+    expect(ownAccess.body.error).toMatch(/admin account/);
+  });
+
+  it("tells the admin when a phone stops sending, loses call access, or the app closed unexpectedly", async () => {
+    const admin = as(await login(env.owner.email, env.owner.password));
+    const one = (await admin('POST', '/api/account/users', { email: 'one@shop.example', role: 'caller' })).body;
+    const app = phone((await env.app.inject({ method: 'POST', url: '/device-api/login', payload: { email: 'one@shop.example', password: one.password } })).json().token);
+    const phones = async () => (await admin('GET', '/api/call-devices')).body.items;
+
+    await app('POST', '/calls', { device: { callHistory: 'allowed', background: 'restricted' }, calls: [] });
+    expect(await phones()).toMatchObject([{ health: 'working', callHistory: 'allowed', background: 'restricted', problem: null }]);
+
+    // Call history access turned off on the phone: the app still checks in and says so.
+    await app('POST', '/calls', { device: { callHistory: 'denied', problem: 'IllegalStateException: something broke' }, calls: [] });
+    expect(await phones()).toMatchObject([{ health: 'no_call_access', problem: { message: 'IllegalStateException: something broke' } }]);
+
+    // Silence: a couple of hours is "quiet", a day is "stopped" (removed, switched off, or no internet).
+    await app('POST', '/calls', { device: { callHistory: 'allowed' }, calls: [] });
+    env.clock.advance(3 * 3_600_000);
+    expect((await phones())[0].health).toBe('quiet');
+    env.clock.advance(22 * 3_600_000);
+    expect((await phones())[0].health).toBe('stopped');
+    // The next check-in puts it back to working; the last problem report stays for the admin to see.
+    await app('POST', '/calls', { calls: [] });
+    expect(await phones()).toMatchObject([{ health: 'working', problem: { message: 'IllegalStateException: something broke' } }]);
+  });
+
   it('deletes recordings after the days the business chose, keeping the call details', async () => {
     const admin = as(await login(env.owner.email, env.owner.password));
     await env.api('POST', '/api/contacts', { phone: '+91 98765 00001', name: 'Asha' });
@@ -171,7 +230,13 @@ describe('call tracking from team phones', () => {
     const path = `${env.config.mediaDir.replace(/\/media$/, '')}/call-recordings/${file}`;
     expect(existsSync(path)).toBe(true);
 
-    expect((await env.api('PUT', '/api/settings', { callRecordingDays: 30 })).status).toBe(200);
+    // 30 days by default, and never longer: a longer value (or one saved before the limit) reads as 30.
+    expect((await env.api('GET', '/api/settings')).body.callRecordingDays).toBe(30);
+    expect((await env.api('PUT', '/api/settings', { callRecordingDays: 90 })).body.callRecordingDays).toBe(30);
+    env.core.db.run("UPDATE settings SET value = json_set(value, '$.callRecordingDays', 365) WHERE key = 'app'");
+    const reread = new SettingsService(env.core.db).get();
+    expect(reread.callRecordingDays).toBe(30);
+    expect(reread.businessName).toBe(env.s.settings.get().businessName);
     env.clock.advance(29 * 86_400_000);
     env.s.calls.prune();
     expect(existsSync(path)).toBe(true);

@@ -34,5 +34,7 @@
 
     <string name="error_no_call_permission">Allow call history access in WA Reach Calls.</string>
     <string name="error_offline">Couldn\'t reach WA Reach. It will try again when the phone is online.</string>
+    <string name="version">WA Reach Calls %1$s</string>
+    <string name="problem_last_time">The app closed unexpectedly %1$s. The reason below is shared with your WA Reach admin so it can be fixed:\n%2$s</string>
     <string name="error_background">This phone didn\'t let the app send in the background. Open the app and tap Send now after your calls.</string>
 </resources>

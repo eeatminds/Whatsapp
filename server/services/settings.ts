@@ -9,6 +9,9 @@ const keywordList = z
   .max(30)
   .transform(list => [...new Set(list.map(k => k.toUpperCase()))]);
 
+/** The longest call recordings are kept on the server, in days. */
+export const MAX_RECORDING_DAYS = 30;
+
 export const settingsSchema = z.object({
   businessName: z.string().trim().max(80),
   timezone: z.string().refine(isValidTimeZone, 'Unknown IANA time zone'),
@@ -46,8 +49,16 @@ export const settingsSchema = z.object({
   }),
   /** A reply within this many hours of a campaign message counts as a reply to that campaign. */
   attributionWindowHours: z.number().int().min(1).max(24 * 30),
-  /** Call recordings sent by team phones are deleted after this many days (call details stay). */
-  callRecordingDays: z.number().int().min(7).max(730),
+  /**
+   * Call recordings sent by team phones are deleted after this many days (call details stay). At
+   * most 30, so recordings never pile up on the server; a longer value saved earlier reads as 30.
+   */
+  callRecordingDays: z
+    .number()
+    .int()
+    .min(7)
+    .max(730)
+    .transform(days => Math.min(days, MAX_RECORDING_DAYS)),
   /**
    * Share every new lead out between callers, round-robin. A lead source that names its own people
    * still wins; this is the default for every other new lead. `among`: 'all' = all current callers,
@@ -93,7 +104,7 @@ export function defaultSettings(env: NodeJS.ProcessEnv = process.env): Settings 
       optOutFooter: 'Reply STOP to unsubscribe.',
     },
     attributionWindowHours: 72,
-    callRecordingDays: 90,
+    callRecordingDays: MAX_RECORDING_DAYS,
     autoAssign: { enabled: false, among: 'all', userIds: [] },
     // On by default at 30 days to keep hosting space in check; contacts and leads are never touched.
     inboxRetentionDays: 30,
