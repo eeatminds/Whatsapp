@@ -131,6 +131,67 @@ export async function registerApiRoutes(app: FastifyInstance, core: Core, s: Ser
     };
   });
 
+  /**
+   * Everything on the dashboard for a range of days (default: the last 14, today included): WhatsApp
+   * messages, contacts, chats, leads, calls, the team and a set-up check. "Before" numbers are for
+   * the same number of days just before. Leads and calls come from their pages' own reports.
+   */
+  app.get('/dashboard', async request => {
+    const range = s.analytics.range(request.query);
+    const dates = { from: range.from, to: range.to };
+    const leads = s.contacts.leadReport(dates);
+    const assignment = s.contacts.leadAssignment(dates);
+    const calls = s.calls.report(dates);
+    const byPerson = new Map(calls.people.map(p => [p.userId, p]));
+    // The healthiest of a person's phones speaks for them.
+    const rank = { working: 0, quiet: 1, no_call_access: 2, stopped: 3 } as const;
+    const members = team();
+    const teamRows = members
+      .filter(m => m.role === 'caller' || assignment.byUser[m.id] || byPerson.has(m.id))
+      .map(m => {
+        const p = byPerson.get(m.id);
+        const phones = calls.devices.filter(d => d.userId === m.id).sort((a, b) => rank[a.health] - rank[b.health]);
+        return {
+          userId: m.id,
+          name: m.name,
+          email: m.email,
+          role: m.role,
+          leads: assignment.byUser[m.id] ?? 0,
+          calls: p?.calls ?? 0,
+          answered: p?.answered ?? 0,
+          talkSeconds: p?.talkSeconds ?? 0,
+          remarksWithoutCall: p?.remarksWithoutCall ?? 0,
+          callApp: !m.callApp ? ('off' as const) : phones.length ? phones[0].health : ('none' as const),
+        };
+      })
+      .sort((a, b) => Number(b.role === 'caller') - Number(a.role === 'caller') || b.leads - a.leads || b.calls - a.calls);
+    const callers = members.filter(m => m.role === 'caller' && m.callApp);
+    const sessions = await s.sessions.list();
+    const total = (key: 'calls' | 'answered' | 'talkSeconds') => calls.people.reduce((sum, p) => sum + p[key], 0);
+    return {
+      range,
+      ...s.analytics.dashboard(range),
+      leads: {
+        total: leads.total,
+        before: s.contacts.leadReport(range.previous).total,
+        byStage: leads.byStage,
+        funnel: leads.funnel,
+        channels: leads.channels,
+        unassigned: assignment.unassigned,
+        unassignedUntouched: assignment.unassignedUntouched,
+      },
+      calls: { tracking: calls.tracking, calls: total('calls'), answered: total('answered'), talkSeconds: total('talkSeconds') },
+      team: teamRows,
+      setup: {
+        sessions: sessions.map(session => ({ id: session.id, name: session.name, status: session.status })),
+        autoAssign: s.settings.get().autoAssign.enabled,
+        callApp: { callers: callers.length, connected: callers.filter(c => calls.devices.some(d => d.userId === c.id)).length },
+        phonesNeedingHelp: calls.devices.filter(d => d.health === 'stopped' || d.health === 'no_call_access').length,
+      },
+      gateway: gatewayFor(request),
+    };
+  });
+
   // ---------------------------------------------------------------- WhatsApp numbers (OpenWA sessions)
 
   app.get('/sessions', async request => {
