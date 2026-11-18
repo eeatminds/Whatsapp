@@ -13,6 +13,7 @@ import android.app.job.JobInfo;
 import android.app.job.JobScheduler;
 import android.provider.CallLog;
 import android.provider.MediaStore;
+import android.telecom.TelecomManager;
 import android.view.View;
 import android.widget.TextView;
 import java.io.File;
@@ -151,6 +152,17 @@ public class RecordingTest {
         assertEquals(View.VISIBLE, found.getVisibility());
         assertTrue(found.getText().toString(), found.getText().toString().startsWith(app.getString(R.string.recordings_none)));
         assertTrue(found.getText().toString(), found.getText().toString().contains("no audio file was saved"));
+    }
+
+    @Test
+    public void warnsWhenThePhoneUsesGooglesPhoneApp() {
+        // Google's Phone app keeps its recordings inside itself: say so, on the phone and to WA Reach.
+        shadowOf(app.getSystemService(TelecomManager.class)).setDefaultDialerPackage(Sync.GOOGLE_DIALER);
+        assertTrue(Sync.run(app));
+        assertTrue(server.calls.get(0), server.calls.get(0).contains("\"dialer\":\"" + Sync.GOOGLE_DIALER + "\""));
+        MainActivity screen = Robolectric.buildActivity(MainActivity.class).setup().get();
+        String shown = ((TextView) screen.findViewById(R.id.recordings_found)).getText().toString();
+        assertTrue(shown, shown.startsWith(app.getString(R.string.recordings_google_dialer)));
     }
 
     @Test

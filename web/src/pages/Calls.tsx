@@ -176,6 +176,12 @@ function CallAppTeam({
                           Recordings found in {d.dialerRecordings.folder || 'the phone'} · newest {relativeTime(d.dialerRecordings.at)}
                         </span>
                       )}
+                      {d.dialer === 'com.google.android.dialer' && (
+                        <span className="small warn-text">
+                          ⚠️ This phone uses Google's Phone app, which keeps its call recordings to itself, so they can't be sent. If the phone has its maker's own Phone
+                          app, make that the default and turn on automatic call recording in it.
+                        </span>
+                      )}
                       {d.recordingCheck && (
                         <span className="small muted">
                           Last recording check ({relativeTime(d.recordingCheck.at)}): {d.recordingCheck.text}

@@ -503,4 +503,21 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE call_devices ADD COLUMN recording_check TEXT;
   ALTER TABLE call_devices ADD COLUMN recording_check_at TEXT;
   `,
+  // 21: a person who signed in again on the same phone (after reinstalling the app) showed up as two
+  // phones, and calls the earlier sign-in made waited for a recording forever. Keep the sign-in seen
+  // most recently, move the other's waiting calls to it, and retire it. Also: which Phone app the
+  // phone uses (Google's keeps its recordings to itself).
+  `
+  CREATE TEMP TABLE repeat_sign_in AS
+    SELECT d.id AS old_id,
+      (SELECT k.id FROM call_devices k WHERE k.user_id = d.user_id AND k.name = d.name AND k.revoked_at IS NULL
+        ORDER BY k.last_seen_at DESC, k.id DESC LIMIT 1) AS new_id
+    FROM call_devices d WHERE d.revoked_at IS NULL;
+  DELETE FROM repeat_sign_in WHERE old_id = new_id;
+  UPDATE calls SET device_id = (SELECT new_id FROM repeat_sign_in WHERE old_id = calls.device_id)
+    WHERE recording_status = 'pending' AND device_id IN (SELECT old_id FROM repeat_sign_in);
+  UPDATE call_devices SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id IN (SELECT old_id FROM repeat_sign_in);
+  DROP TABLE repeat_sign_in;
+  ALTER TABLE call_devices ADD COLUMN dialer TEXT;
+  `,
 ];

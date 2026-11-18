@@ -693,6 +693,8 @@ export interface CallDevice {
   dialerRecordings: { folder: string; at: string } | 'none' | null;
   /** What the phone found when it last looked for a call's recording, in its words. */
   recordingCheck: { text: string; at: string } | null;
+  /** The phone's default Phone app (package name). */
+  dialer: string | null;
 }
 
 export interface LeadCalls {

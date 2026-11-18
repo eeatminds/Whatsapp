@@ -7,6 +7,7 @@ import { nowIso } from '../db/database.js';
 import { badRequest, HttpError, notFound } from '../lib/errors.js';
 import { randomToken } from '../lib/crypto.js';
 import { normalizePhone } from '../lib/phone.js';
+import { trimToTalk } from '../lib/audio.js';
 import { startOfLocalDay } from '../lib/time.js';
 import type { SettingsService } from './settings.js';
 import type { ContactsService } from './contacts.js';
@@ -20,7 +21,7 @@ import type { ContactsService } from './contacts.js';
  */
 
 /** The app version the server expects; older apps are told an update is available. */
-export const CALL_APP_VERSION = '1.0.4';
+export const CALL_APP_VERSION = '1.0.5';
 
 export type CallDirection = 'outgoing' | 'incoming' | 'missed' | 'rejected';
 /** Android's CallLog.Calls.TYPE values. */
@@ -65,6 +66,7 @@ export interface DeviceRow {
   last_recording_at: string | null;
   recording_check: string | null;
   recording_check_at: string | null;
+  dialer: string | null;
 }
 
 interface CallRow {
@@ -120,6 +122,8 @@ export interface CallDevice {
   dialerRecordings: { folder: string; at: string } | 'none' | null;
   /** What the phone found when it last looked for a call's recording, in its words. */
   recordingCheck: { text: string; at: string } | null;
+  /** The phone's default Phone app (package name), as the phone reported it. */
+  dialer: string | null;
 }
 
 /** What a lead's calls look like on the Leads page. */
@@ -147,6 +151,8 @@ const uploadSchema = z.object({
       lastRecordingAt: z.number().int().min(0).optional(),
       /** What the phone found when it last looked for a call's recording. */
       recordingCheck: z.string().trim().min(1).max(300).optional(),
+      /** The phone's default Phone app (package name). */
+      dialer: z.string().trim().min(1).max(100).optional(),
     })
     .default({}),
   calls: z
@@ -222,17 +228,34 @@ export class CallsService {
     const secret = randomToken(40);
     const now = this.now();
     const since = iso(now.getTime() - DAY);
-    const { lastInsertRowid } = this.core.db.run(
-      'INSERT INTO call_devices (user_id, name, token_hash, session_version, since, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      userId,
-      name.trim().slice(0, 80) || 'Phone',
-      hashSecret(secret),
-      sessionVersion,
-      since,
-      nowIso(now),
-      nowIso(now),
-    );
-    return { secret, deviceId: lastInsertRowid, since };
+    const label = name.trim().slice(0, 80) || 'Phone';
+    let deviceId = 0;
+    this.core.db.tx(() => {
+      deviceId = this.core.db.run(
+        'INSERT INTO call_devices (user_id, name, token_hash, session_version, since, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        userId,
+        label,
+        hashSecret(secret),
+        sessionVersion,
+        since,
+        nowIso(now),
+        nowIso(now),
+      ).lastInsertRowid;
+      // Signing in again on the same phone (after reinstalling the app, or clearing it): the earlier
+      // sign-in is this phone too. It retires, and its calls still waiting for a recording come here,
+      // where the recordings are.
+      const earlier = this.core.db.all<{ id: number }>(
+        'SELECT id FROM call_devices WHERE user_id = ? AND name = ? AND revoked_at IS NULL AND id != ?',
+        userId,
+        label,
+        deviceId,
+      );
+      for (const { id } of earlier) {
+        this.core.db.run("UPDATE calls SET device_id = ? WHERE device_id = ? AND recording_status = 'pending'", deviceId, id);
+        this.core.db.run('UPDATE call_devices SET revoked_at = ? WHERE id = ?', nowIso(now), id);
+      }
+    });
+    return { secret, deviceId, since };
   }
 
   /** The phone signed in with this secret, unless it was signed out. */
@@ -274,6 +297,7 @@ export class CallsService {
         problem: d.problem && d.problem_at ? { message: d.problem, at: d.problem_at } : null,
         dialerRecordings: d.recording_folder === null ? null : d.recording_folder && d.last_recording_at ? { folder: d.recording_folder, at: d.last_recording_at } : 'none',
         recordingCheck: d.recording_check && d.recording_check_at ? { text: d.recording_check, at: d.recording_check_at } : null,
+        dialer: d.dialer,
       }));
   }
 
@@ -296,7 +320,8 @@ export class CallsService {
          call_log = COALESCE(?, call_log), background = COALESCE(?, background),
          problem = COALESCE(?, problem), problem_at = CASE WHEN ? IS NULL THEN problem_at ELSE ? END,
          recording_folder = COALESCE(?, recording_folder), last_recording_at = CASE WHEN ? IS NULL THEN last_recording_at ELSE ? END,
-         recording_check = COALESCE(?, recording_check), recording_check_at = CASE WHEN ? IS NULL THEN recording_check_at ELSE ? END
+         recording_check = COALESCE(?, recording_check), recording_check_at = CASE WHEN ? IS NULL THEN recording_check_at ELSE ? END,
+         dialer = COALESCE(?, dialer)
        WHERE id = ?`,
       nowIso(now),
       data.device.name ?? null,
@@ -313,6 +338,7 @@ export class CallsService {
       data.device.recordingCheck ?? null,
       data.device.recordingCheck ?? null,
       nowIso(now),
+      data.device.dialer ?? null,
       device.id,
     );
     const since = Date.parse(device.since);
@@ -376,7 +402,7 @@ export class CallsService {
   }
 
   /** The dialer's recording of a kept call. Only real audio is accepted, checked by its content. */
-  saveRecording(device: DeviceRow, callId: number, data: Buffer): { ok: true } {
+  async saveRecording(device: DeviceRow, callId: number, data: Buffer): Promise<{ ok: true }> {
     const call = this.ownCall(device, callId);
     if (call.recording_status === 'saved') return { ok: true };
     if (call.recording_status !== 'pending') throw badRequest('This call no longer needs a recording');
@@ -384,12 +410,15 @@ export class CallsService {
     if (!kind) throw new HttpError(415, 'That file is not a recording');
     mkdirSync(this.dir, { recursive: true });
     const file = `c${call.id}.${kind.ext}`;
-    writeFileSync(join(this.dir, file), data, { mode: 0o600 });
+    const path = join(this.dir, file);
+    writeFileSync(path, data, { mode: 0o600 });
+    // Only the conversation: drop ringing the dialer recorded before the call was answered.
+    const size = await trimToTalk(path, kind.ext, call.duration);
     this.core.db.run(
       "UPDATE calls SET recording_status = 'saved', recording_file = ?, recording_mime = ?, recording_size = ? WHERE id = ?",
       file,
       kind.mime,
-      data.length,
+      size,
       call.id,
     );
     return { ok: true };

@@ -18,6 +18,9 @@ ENV NODE_ENV=production \
     DATA_DIR=/app/data \
     PORT=3000 \
     HOST=0.0.0.0
+# ffmpeg trims call recordings to the conversation (dropping ringing a dialer recorded first).
+# Without it, recordings are kept whole; an install failure never stops the update.
+RUN apk add --no-cache ffmpeg || echo "ffmpeg not installed: call recordings will be kept untrimmed"
 WORKDIR /app
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
