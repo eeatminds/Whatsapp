@@ -143,21 +143,51 @@ export function GetTheApp({ app }: { app: CallApp }) {
           {qr && <img src={qr} alt="QR code to download WA Reach Calls" width={180} height={180} className="app-qr" />}
           <div className="stack tight" style={{ flex: '1 1 260px' }}>
             <ol className="setup-steps">
-              <li>On the company phone, scan this code with the camera, or open the link below.</li>
-              <li>Download the file and open it. If Android asks, allow installing apps from your browser.</li>
+              <li>On the caller's phone, scan this code with the camera, or open the link below.</li>
+              <li>
+                Download the file and open it. If Android asks, allow installing apps from your browser. <strong>Already have the app?</strong> Install this over
+                it, without uninstalling first: it stays signed in.
+              </li>
               <li>Open WA Reach Calls and sign in with that person's WA Reach email and password.</li>
               <li>
                 Allow <strong>call history</strong>, and <strong>music and audio</strong> for recordings. Tap Allow next to "Runs in the background" too.
               </li>
+              <li>
+                <strong>Turn on automatic call recording, once,</strong> in the phone's own Phone app: Settings → Call recording → record all calls
+                automatically. From then on every call is recorded with nothing to press, and the recordings of calls with leads come here.
+              </li>
             </ol>
             <div>
               <a className="btn" href={url} download>
-                <IconDownload size={16} /> Download WA Reach Calls
+                <IconDownload size={16} /> Download WA Reach Calls {app.version}
               </a>
             </div>
+            <details className="hint">
+              <summary>Where automatic call recording is, by phone brand</summary>
+              <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                <li>
+                  <strong>Vivo / iQOO:</strong> Phone → Settings (⋮ or ⚙) → Call recording → Auto record calls → All calls.
+                </li>
+                <li>
+                  <strong>Samsung:</strong> Phone → ⋮ → Settings → Record calls → Auto record calls → All calls.
+                </li>
+                <li>
+                  <strong>Xiaomi / Redmi / POCO:</strong> Phone → Settings → Call recording → Record calls automatically → All numbers.
+                </li>
+                <li>
+                  <strong>OnePlus / Oppo / Realme:</strong> Phone → Settings → Call recording → Auto record → All calls.
+                </li>
+                <li>
+                  <strong>Google's Phone app</strong> (on some newer phones) keeps its recordings to itself, so they can't come here. If the phone also has its
+                  maker's own Phone app, make that the default (Settings → Apps → Default apps → Phone). The app warns when this is the case.
+                </li>
+              </ul>
+              <p style={{ margin: '6px 0 0' }}>Menu names differ a little between models. The WA Reach Calls app shows whether it finds recordings on the phone.</p>
+            </details>
             <p className="hint" style={{ margin: 0 }}>
-              Only calls with your leads are kept; every other call on the phone is ignored. Recordings come from the phone's own dialer, so turn on call
-              recording in the Phone app's settings if the phone has it. iPhones can't share their call history, so this works on Android only.
+              Only calls with your leads are kept; every other call on the phone is ignored. Each recording is kept to the conversation: ringing before the call
+              was answered is cut off. Phones with an older version show "A new version is available" in the app. iPhones can't share their call history, so this
+              works on Android only.
             </p>
           </div>
         </div>
