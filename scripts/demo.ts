@@ -397,7 +397,7 @@ async function main(): Promise<void> {
   for (const device of phones) {
     for (const { id } of runtime.core.db.all<{ id: number }>("SELECT id FROM calls WHERE device_id = ? AND recording_status = 'pending'", device.id)) {
       if (id % 3 === 0) s.calls.noRecording(device, id);
-      else s.calls.saveRecording(device, id, tone(2));
+      else await s.calls.saveRecording(device, id, tone(2));
     }
   }
   for (const device of phones) s.calls.touch(device);

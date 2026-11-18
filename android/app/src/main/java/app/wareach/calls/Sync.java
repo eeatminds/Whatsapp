@@ -6,6 +6,7 @@ import android.content.pm.PackageManager;
 import android.content.res.AssetFileDescriptor;
 import android.os.Build;
 import android.os.PowerManager;
+import android.telecom.TelecomManager;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
@@ -45,6 +46,20 @@ final class Sync {
         return pm != null && pm.isIgnoringBatteryOptimizations(c.getPackageName());
     }
 
+    /** Google's Phone app keeps its call recordings inside itself, where no other app can read them. */
+    static final String GOOGLE_DIALER = "com.google.android.dialer";
+
+    /** The phone's default Phone app (its package name), or "" if Android won't say. */
+    static String dialer(Context c) {
+        try {
+            TelecomManager telecom = c.getSystemService(TelecomManager.class);
+            String pkg = telecom == null ? null : telecom.getDefaultDialerPackage();
+            return pkg == null ? "" : pkg;
+        } catch (RuntimeException e) {
+            return "";
+        }
+    }
+
     static String deviceName() {
         String maker = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER;
         String model = Build.MODEL == null ? "Phone" : Build.MODEL;
@@ -75,6 +90,8 @@ final class Sync {
                     .put("recordings", recordings ? "allowed" : "denied")
                     .put("callHistory", callHistory ? "allowed" : "denied")
                     .put("background", runsInBackground(context) ? "allowed" : "restricted");
+            String dialer = dialer(context);
+            if (!dialer.isEmpty()) device.put("dialer", dialer);
             if (recordings) {
                 // Whether the phone's dialer is saving call recordings at all (folder and time only).
                 RecordingFinder.Latest latest = latestRecording(context);

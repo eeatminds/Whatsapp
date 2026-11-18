@@ -314,6 +314,7 @@ public class MainActivity extends Activity {
                     ? getString(R.string.recordings_none)
                     : getString(R.string.recordings_found, prefs.recordingsFolder(), Time.ago(prefs.lastRecordingAt()));
             String report = prefs.recordingReport();
+            if (Sync.GOOGLE_DIALER.equals(Sync.dialer(this))) found = getString(R.string.recordings_google_dialer);
             recordingsFound.setText(report.isEmpty() ? found : found + "\n" + getString(R.string.recording_report, report));
         }
         boolean background = Sync.runsInBackground(this);
