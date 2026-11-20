@@ -535,6 +535,56 @@ export interface Overview {
   sessions: Array<{ id: string; name: string; status: string; phone: string | null }>;
 }
 
+/** Everything on the dashboard for a range of days; "before" is the same number of days just before. */
+export interface DashboardData {
+  range: { from: string; to: string; days: number; previous: { from: string; to: string } };
+  messages: {
+    sent: number;
+    delivered: number;
+    read: number;
+    failed: number;
+    received: number;
+    before: { sent: number; received: number };
+    optedIn: number;
+    optedOut: number;
+    senders: { inbox: number; autoReply: number; phone: number; marketing: number; other: number };
+    series: Array<{ date: string; sent: number; delivered: number; read: number; received: number }>;
+  };
+  contacts: { total: number; onWhatsApp: number; notOnWhatsApp: number; unchecked: number; added: number; addedBefore: number };
+  chats: { conversations: number; waiting: number; unread: number };
+  today: { marketingSent: number; dailyCap: number };
+  leads: {
+    total: number;
+    before: number;
+    byStage: Record<LeadStage, number>;
+    funnel: Array<{ key: string; label: string; count: number }>;
+    channels: Array<{ key: string; name: string; leads: number } & Record<LeadStage, number>>;
+    unassigned: number;
+    unassignedUntouched: number;
+  };
+  calls: { tracking: boolean; calls: number; answered: number; talkSeconds: number };
+  team: Array<{
+    userId: number;
+    name: string | null;
+    email: string;
+    role: 'owner' | 'member' | 'caller';
+    leads: number;
+    calls: number;
+    answered: number;
+    talkSeconds: number;
+    remarksWithoutCall: number;
+    /** off: not in the call app. none: no phone connected. Otherwise the phone's health. */
+    callApp: 'off' | 'none' | CallDevice['health'];
+  }>;
+  setup: {
+    sessions: Array<{ id: string; name: string; status: string }>;
+    autoAssign: boolean;
+    callApp: { callers: number; connected: number };
+    phonesNeedingHelp: number;
+  };
+  gateway: GatewayStatus;
+}
+
 // ---------------------------------------------------------------- platform (SaaS)
 
 export type Access = 'active' | 'grace' | 'expired' | 'suspended';

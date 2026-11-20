@@ -829,6 +829,27 @@ export class ContactsService {
     };
   }
 
+  /** Leads added in a date range, per person they were given to, and how many nobody has yet. */
+  leadAssignment(input: unknown): { byUser: Record<number, number>; unassigned: number; unassignedUntouched: number } {
+    const filter = contactFilterSchema.pick({ from: true, to: true }).parse(input ?? {});
+    const where = this.filterSql(filter);
+    const byUser: Record<number, number> = {};
+    let unassigned = 0;
+    let unassignedUntouched = 0;
+    for (const r of this.core.db.all<{ assigned_to: number | null; untouched: number; n: number }>(
+      `SELECT c.assigned_to, SUM(c.lead_stage = 'untouched') AS untouched, COUNT(*) AS n FROM contacts c WHERE ${where.sql} GROUP BY c.assigned_to`,
+      ...where.params,
+    )) {
+      if (r.assigned_to === null) {
+        unassigned = r.n;
+        unassignedUntouched = r.untouched;
+      } else {
+        byUser[r.assigned_to] = r.n;
+      }
+    }
+    return { byUser, unassigned, unassignedUntouched };
+  }
+
   // ---------------------------------------------------------------- inbound + validation helpers
 
   /** Contact for an inbound WhatsApp sender, creating it on first contact. */
